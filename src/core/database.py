@@ -1,0 +1,343 @@
+"""SQLAlchemy models. Table prefixes enforce domain separation:
+source_* (provenance), canonical_* (educational content),
+curriculum_* (lessons), assessment_* (exams), learning_* (students),
+ai_* (AI jobs/outputs). Never collapse these into one table."""
+from __future__ import annotations
+
+from datetime import datetime
+
+from sqlalchemy import (
+    JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, create_engine,
+)
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+def utcnow() -> datetime:
+    return datetime.utcnow()
+
+
+# ---------------- SOURCE domain ----------------
+
+class SourceDocument(Base):
+    __tablename__ = "source_documents"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    repo_name: Mapped[str] = mapped_column(String, nullable=False)
+    repo_url: Mapped[str] = mapped_column(String, nullable=False, default="")
+    source_path: Mapped[str] = mapped_column(String, nullable=False)
+    file_sha256: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    file_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    file_type: Mapped[str] = mapped_column(String, nullable=False, default="")
+    rights_status: Mapped[str] = mapped_column(String, nullable=False, default="unknown")
+    rights_note: Mapped[str] = mapped_column(Text, default="")
+    ingestion_batch: Mapped[str] = mapped_column(String, nullable=False, default="")
+    ingestion_version: Mapped[str] = mapped_column(String, nullable=False, default="0.1.0")
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class SourcePage(Base):
+    __tablename__ = "source_pages"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    document_id: Mapped[str] = mapped_column(String, ForeignKey("source_documents.id"), index=True)
+    page_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    text_content: Mapped[str] = mapped_column(Text, default="")
+    text_confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    ocr_used: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class SourceAsset(Base):
+    __tablename__ = "source_assets"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    document_id: Mapped[str] = mapped_column(String, ForeignKey("source_documents.id"), index=True)
+    page_id: Mapped[str] = mapped_column(String, ForeignKey("source_pages.id"), nullable=True)
+    asset_type: Mapped[str] = mapped_column(String, nullable=False, default="raster")
+    mime_type: Mapped[str] = mapped_column(String, nullable=False, default="")
+    sha256: Mapped[str] = mapped_column(String, nullable=False, default="")
+    storage_path: Mapped[str] = mapped_column(String, nullable=False, default="")
+    bbox: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    alt_text: Mapped[str] = mapped_column(Text, default="")
+    ocr_text: Mapped[str] = mapped_column(Text, default="")
+
+
+class QuestionOccurrence(Base):
+    __tablename__ = "question_occurrences"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    canonical_question_id: Mapped[str] = mapped_column(
+        String, ForeignKey("canonical_questions.id"), nullable=True, index=True)
+    document_id: Mapped[str] = mapped_column(String, ForeignKey("source_documents.id"), index=True)
+    page_id: Mapped[str] = mapped_column(String, ForeignKey("source_pages.id"))
+    question_number: Mapped[str] = mapped_column(String, default="")
+    linked_answer: Mapped[str] = mapped_column(String, default="")
+    extraction_run: Mapped[str] = mapped_column(String, default="")
+    extraction_version: Mapped[str] = mapped_column(String, default="0.1.0")
+    extraction_confidence: Mapped[float] = mapped_column(Float, default=0.0)
+
+
+# ---------------- CANONICAL domain ----------------
+
+class CanonicalSubject(Base):
+    __tablename__ = "canonical_subjects"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    display_order: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class CanonicalTopic(Base):
+    __tablename__ = "canonical_topics"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    subject_id: Mapped[str] = mapped_column(String, ForeignKey("canonical_subjects.id"), index=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="")
+    display_order: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class CanonicalSkill(Base):
+    __tablename__ = "canonical_skills"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    topic_id: Mapped[str] = mapped_column(String, ForeignKey("canonical_topics.id"), index=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class CanonicalQuestionType(Base):
+    __tablename__ = "canonical_question_types"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="")
+    requires_options: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class CanonicalQuestion(Base):
+    __tablename__ = "canonical_questions"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    subject: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    topic: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    subtopic: Mapped[str] = mapped_column(String, default="")
+    question_type: Mapped[str] = mapped_column(
+        String, ForeignKey("canonical_question_types.id"), index=True)
+    difficulty: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    skill_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    question_text: Mapped[str] = mapped_column(Text, default="")
+    instructions: Mapped[str] = mapped_column(Text, default="")
+    context: Mapped[str] = mapped_column(Text, default="")
+    correct_answer: Mapped[str] = mapped_column(Text, default="")
+    options_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    explanation: Mapped[str] = mapped_column(Text, default="")
+    worked_solution: Mapped[str] = mapped_column(Text, default="")
+    hint: Mapped[str] = mapped_column(Text, default="")
+    language: Mapped[str] = mapped_column(String, default="en")
+    exam_board: Mapped[str] = mapped_column(String, default="")
+    region: Mapped[str] = mapped_column(String, default="")
+    fingerprint: Mapped[str] = mapped_column(String, default="", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class QuestionReviewStatus(Base):
+    __tablename__ = "question_review_status"
+    question_id: Mapped[str] = mapped_column(
+        String, ForeignKey("canonical_questions.id"), primary_key=True)
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="discovered", index=True)
+    source: Mapped[str] = mapped_column(String, nullable=False, default="ingestion")
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class AssessmentExamBoard(Base):
+    __tablename__ = "assessment_exam_boards"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="")
+    regions_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+
+class AssessmentExam(Base):
+    __tablename__ = "assessment_exams"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    exam_board_id: Mapped[str] = mapped_column(
+        String, ForeignKey("assessment_exam_boards.id"), index=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    region: Mapped[str] = mapped_column(String, default="")
+    subjects_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+
+class AssessmentExamSection(Base):
+    __tablename__ = "assessment_exam_sections"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    exam_id: Mapped[str] = mapped_column(
+        String, ForeignKey("assessment_exams.id"), index=True)
+    section_number: Mapped[int] = mapped_column(Integer, default=1)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    subject: Mapped[str] = mapped_column(String, default="")
+    question_count: Mapped[int] = mapped_column(Integer, default=0)
+    time_minutes: Mapped[int] = mapped_column(Integer, default=0)
+    marks_available: Mapped[int] = mapped_column(Integer, default=0)
+    instructions: Mapped[str] = mapped_column(Text, default="")
+
+
+class CurriculumLesson(Base):
+    __tablename__ = "curriculum_lessons"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    topic_id: Mapped[str] = mapped_column(
+        String, ForeignKey("canonical_topics.id"), index=True)
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    content_markdown: Mapped[str] = mapped_column(Text, default="")
+    display_order: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class CurriculumStrategy(Base):
+    __tablename__ = "curriculum_strategies"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    topic_id: Mapped[str] = mapped_column(
+        String, ForeignKey("canonical_topics.id"), index=True)
+    question_type: Mapped[str] = mapped_column(String, default="")
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    content_markdown: Mapped[str] = mapped_column(Text, default="")
+    display_order: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class CurriculumWorkedExample(Base):
+    __tablename__ = "curriculum_worked_examples"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    topic_id: Mapped[str] = mapped_column(
+        String, ForeignKey("canonical_topics.id"), index=True)
+    question_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("canonical_questions.id"), nullable=True)
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    content_markdown: Mapped[str] = mapped_column(Text, default="")
+
+
+class CurriculumCommonMistake(Base):
+    __tablename__ = "curriculum_common_mistakes"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    topic_id: Mapped[str] = mapped_column(
+        String, ForeignKey("canonical_topics.id"), index=True)
+    mistake_text: Mapped[str] = mapped_column(Text, default="")
+    explanation_markdown: Mapped[str] = mapped_column(Text, default="")
+
+
+class LearningStudent(Base):
+    __tablename__ = "learning_students"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    target_exam: Mapped[str] = mapped_column(String, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class LearningStudySession(Base):
+    __tablename__ = "learning_study_sessions"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    student_id: Mapped[str] = mapped_column(
+        String, ForeignKey("learning_students.id"), index=True)
+    session_type: Mapped[str] = mapped_column(String, default="practice")
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class LearningQuestionAttempt(Base):
+    __tablename__ = "learning_question_attempts"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    student_id: Mapped[str] = mapped_column(
+        String, ForeignKey("learning_students.id"), index=True)
+    session_id: Mapped[str] = mapped_column(
+        String, ForeignKey("learning_study_sessions.id"), index=True)
+    question_id: Mapped[str] = mapped_column(
+        String, ForeignKey("canonical_questions.id"), index=True)
+    chosen_answer: Mapped[str] = mapped_column(Text, default="")
+    is_correct: Mapped[bool] = mapped_column(Boolean, default=False)
+    time_taken_ms: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class LearningTopicMastery(Base):
+    __tablename__ = "learning_topic_mastery"
+    student_id: Mapped[str] = mapped_column(
+        String, ForeignKey("learning_students.id"), primary_key=True)
+    topic_id: Mapped[str] = mapped_column(
+        String, ForeignKey("canonical_topics.id"), primary_key=True)
+    accuracy: Mapped[float] = mapped_column(Float, default=0.0)
+    times_practiced: Mapped[int] = mapped_column(Integer, default=0)
+    times_correct: Mapped[int] = mapped_column(Integer, default=0)
+
+
+
+
+class LearningRecommendation(Base):
+    __tablename__ = "learning_recommendations"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    student_id: Mapped[str] = mapped_column(
+        String, ForeignKey("learning_students.id"), index=True)
+    reason: Mapped[str] = mapped_column(String, default="")
+    question_ids_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class AIJob(Base):
+    __tablename__ = "ai_jobs"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    job_type: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    source_input: Mapped[str] = mapped_column(Text, default="")
+    model: Mapped[str] = mapped_column(String, default="")
+    model_version: Mapped[str] = mapped_column(String, default="")
+    prompt_version: Mapped[str] = mapped_column(String, default="")
+    status: Mapped[str] = mapped_column(String, default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    error_message: Mapped[str] = mapped_column(Text, default="")
+
+
+class AIOutput(Base):
+    __tablename__ = "ai_outputs"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    job_id: Mapped[str] = mapped_column(String, ForeignKey("ai_jobs.id"), index=True)
+    output_type: Mapped[str] = mapped_column(String, default="")
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    output_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class AIValidation(Base):
+    __tablename__ = "ai_validations"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    ai_output_id: Mapped[str] = mapped_column(
+        String, ForeignKey("ai_outputs.id"), index=True)
+    validator_type: Mapped[str] = mapped_column(String, default="")
+    passed: Mapped[bool] = mapped_column(Boolean, default=False)
+    details_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class AIApproval(Base):
+    __tablename__ = "ai_approvals"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    ai_output_id: Mapped[str] = mapped_column(
+        String, ForeignKey("ai_outputs.id"), index=True)
+    status: Mapped[str] = mapped_column(String, default="pending", index=True)
+    reviewer_id: Mapped[str] = mapped_column(String, default="")
+    comments: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class PipelineRun(Base):
+    __tablename__ = "pipeline_runs"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    pipeline_version: Mapped[str] = mapped_column(String, default="")
+    status: Mapped[str] = mapped_column(String, default="running", index=True)
+    checkpoint: Mapped[str] = mapped_column(String, default="")
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    stats_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+def get_engine(url: str):
+    return create_engine(url, echo=False, future=True)
+
+
+def get_session_factory(engine):
+    return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+
+
+def init_db(engine) -> None:
+    Base.metadata.create_all(bind=engine)
