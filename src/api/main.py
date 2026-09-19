@@ -131,6 +131,7 @@ def review(question_id: str, payload: ReviewIn, db: Session = Depends(get_db)):
     return {"ok": True, "status": payload.status}
 
 
+
 @app.get("/api/progress/{student_id}")
 def progress(student_id: str, db: Session = Depends(get_db)):
     from src.learning.weak_area import refresh_topic_mastery, weak_topics
@@ -139,3 +140,58 @@ def progress(student_id: str, db: Session = Depends(get_db)):
     return {"weak_topics": [
         {"topic": w.topic_id, "accuracy": w.accuracy,
          "practiced": w.times_practiced} for w in weak]}
+
+
+@app.get("/api/curriculum/{topic_id}")
+def curriculum(topic_id: str, db: Session = Depends(get_db)):
+    from src.core.database import (
+        CurriculumCommonMistake, CurriculumLesson, CurriculumStrategy,
+        CurriculumWorkedExample,
+    )
+    return {
+        "lessons": [{"title": r.title, "content": r.content_markdown}
+                    for r in db.query(CurriculumLesson).filter_by(topic_id=topic_id).all()],
+        "strategies": [{"title": r.title, "content": r.content_markdown}
+                       for r in db.query(CurriculumStrategy).filter_by(topic_id=topic_id).all()],
+        "worked_examples": [{"title": r.title, "content": r.content_markdown}
+                            for r in db.query(CurriculumWorkedExample).filter_by(topic_id=topic_id).all()],
+        "common_mistakes": [{"mistake": r.mistake_text, "explanation": r.explanation_markdown}
+                            for r in db.query(CurriculumCommonMistake).filter_by(topic_id=topic_id).all()],
+    }
+
+
+@app.get("/api/parent/{student_id}")
+def parent_dashboard(student_id: str, db: Session = Depends(get_db)):
+    from src.learning.parent_summary import parent_summary
+    return parent_summary(db, student_id)
+
+
+class ExamCreate(BaseModel):
+    exam_board_id: str = "mixed"
+    name: str = "Practice paper"
+    region: str = ""
+
+
+@app.post("/api/exams")
+def create_exam(payload: ExamCreate, db: Session = Depends(get_db)):
+    from src.core.database import AssessmentExam
+    e = AssessmentExam(id=str(uuid.uuid4()), exam_board_id=payload.exam_board_id,
+                       name=payload.name, region=payload.region)
+    db.add(e)
+    db.commit()
+    return {"exam_id": e.id}
+
+
+class AssembleIn(BaseModel):
+    mode: str = "generated"  # generated | authentic
+    sections: list[dict] = []
+    document_id: str = ""
+    seed: int = 42
+
+
+@app.post("/api/exams/{exam_id}/assemble")
+def assemble_exam(exam_id: str, payload: AssembleIn, db: Session = Depends(get_db)):
+    from src.assessment.assembler import assemble_authentic, assemble_generated
+    if payload.mode == "authentic":
+        return assemble_authentic(db, exam_id, payload.document_id)
+    return assemble_generated(db, exam_id, payload.sections, seed=payload.seed)
