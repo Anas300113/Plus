@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
+from src.api.dashboard_pages import HOME, LEARN, MOCKS, PARENT, PROGRESS
 from src.api.practice_page import PRACTICE_HTML
 
 from src.core.database import (
@@ -47,6 +48,31 @@ class AnswerIn(BaseModel):
 @app.get("/api/health")
 def health():
     return {"ok": True}
+
+
+@app.get("/", response_class=HTMLResponse)
+def home():
+    return HOME
+
+
+@app.get("/learn", response_class=HTMLResponse)
+def learn():
+    return LEARN
+
+
+@app.get("/mocks", response_class=HTMLResponse)
+def mocks():
+    return MOCKS
+
+
+@app.get("/progress", response_class=HTMLResponse)
+def progress_page():
+    return PROGRESS
+
+
+@app.get("/parent", response_class=HTMLResponse)
+def parent_page():
+    return PARENT
 
 
 @app.get("/practice", response_class=HTMLResponse)

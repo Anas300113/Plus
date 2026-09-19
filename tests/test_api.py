@@ -63,3 +63,27 @@ def test_practice_page_served(client):
     c, _ = client
     r = c.get("/practice")
     assert r.status_code == 200 and "11+ Practice" in r.text
+
+
+def test_dashboard_pages_served(client):
+    c, _ = client
+    for path, marker in [("/", "11+ Preparation Platform"),
+                         ("/learn", "Learn"), ("/mocks", "Mock Exams"),
+                         ("/progress", "Progress"), ("/parent", "Parent dashboard")]:
+        r = c.get(path)
+        assert r.status_code == 200 and marker in r.text, path
+
+
+def test_curriculum_and_parent_endpoints(client):
+    c, _ = client
+    assert c.get("/api/curriculum/maths-fractions").status_code == 200
+    assert "practice_completed" in c.get("/api/parent/s1").json()
+
+
+def test_exam_assemble_endpoint(client):
+    c, qid = client
+    exam = c.post("/api/exams", json={"name": "E"}).json()
+    out = c.post(f"/api/exams/{exam['exam_id']}/assemble",
+                 json={"mode": "generated",
+                       "sections": [{"subject": "maths", "count": 5}]}).json()
+    assert out["questions"] == [qid]
