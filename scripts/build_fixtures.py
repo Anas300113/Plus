@@ -7,6 +7,10 @@ from __future__ import annotations
 from pathlib import Path
 
 
+def _esc(s: str) -> str:
+    return s.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
 def _pdf(path: Path, lines: list[str]) -> None:
     from pypdf import PdfWriter
     from pypdf.generic import (ArrayObject, DecodedStreamObject, DictionaryObject,
@@ -14,7 +18,7 @@ def _pdf(path: Path, lines: list[str]) -> None:
     writer = PdfWriter()
     page = writer.add_blank_page(width=595, height=842)
     text = "BT /F1 11 Tf 50 800 Td 14 TL " + " Tj T* ".join(
-        f"({l})" for l in lines) + " Tj ET"
+        f"({_esc(l)})" for l in lines) + " Tj ET"
     stream = DecodedStreamObject()
     stream.set_data(text.encode("latin-1", "replace"))
     page[NameObject("/Contents")] = writer._add_object(stream)

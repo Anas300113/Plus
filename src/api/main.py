@@ -8,7 +8,10 @@ from datetime import datetime
 
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
+from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
+
+from src.api.practice_page import PRACTICE_HTML
 
 from src.core.database import (
     CanonicalQuestion, LearningQuestionAttempt, LearningStudent,
@@ -44,6 +47,11 @@ class AnswerIn(BaseModel):
 @app.get("/api/health")
 def health():
     return {"ok": True}
+
+
+@app.get("/practice", response_class=HTMLResponse)
+def practice_page():
+    return PRACTICE_HTML
 
 
 @app.get("/api/questions")

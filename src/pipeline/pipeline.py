@@ -17,6 +17,7 @@ from src.pipeline import extract as extract_step
 from src.pipeline import ingest as ingest_step
 from src.pipeline import inventory as inventory_step
 from src.pipeline import link as link_step
+from src.pipeline import offices as offices_step
 from src.pipeline import validate as validate_step
 from src.source.inventory import inventory_directory
 
@@ -59,6 +60,9 @@ def run_pipeline(
                 stats[step] = extract_step.run_page_extract(session, docs)
             elif step == "text_extract":
                 stats[step] = extract_step.run_text_extract(session, docs, source_root)
+                office = offices_step.run_office_extract(session, docs, source_root)
+                stats[step] = {"pdf_pages": stats[step].get("pages", 0),
+                               "office_pages": office.get("pages", 0)}
             elif step == "image_extract":
                 stats[step] = extract_step.run_image_extract(session, docs, source_root)
             elif step == "detect":
