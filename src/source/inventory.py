@@ -50,6 +50,7 @@ def inventory_directory(
     batch: str = "",
     rights_default: str = "unknown",
     version: str = "0.1.0",
+    commit_sha: str = "",
 ) -> list[SourceDocument]:
     root = Path(root)
     docs: list[SourceDocument] = []
@@ -73,6 +74,7 @@ def inventory_directory(
             rights_status=rights_default,
             ingestion_batch=batch,
             ingestion_version=version,
+            commit_sha=commit_sha,
         )
         doc.file_sha256 = sha
         doc.file_size = path.stat().st_size

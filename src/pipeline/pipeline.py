@@ -8,7 +8,9 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from src.core.database import PipelineRun
+from src.core.database import (
+    CanonicalQuestion, PipelineRun, QuestionReviewStatus,
+)
 from src.core.logging import get_logger
 from src.pipeline import classify as classify_step
 from src.pipeline import dedup as dedup_step
@@ -18,15 +20,17 @@ from src.pipeline import ingest as ingest_step
 from src.pipeline import inventory as inventory_step
 from src.pipeline import link as link_step
 from src.pipeline import offices as offices_step
+from src.pipeline import approve as approve_step
 from src.pipeline import validate as validate_step
+from src.pipeline import vision as vision_step
 from src.source.inventory import inventory_directory
 
 log = get_logger("pipeline")
 
 STEPS = [
     "inventory", "ingest", "page_extract", "text_extract",
-    "image_extract", "detect", "link", "classify",
-    "dedup", "validate",
+    "image_extract", "vision", "detect", "link", "classify",
+    "dedup", "validate", "approve",
 ]
 
 
@@ -37,6 +41,7 @@ def run_pipeline(
     batch: str,
     version: str = "0.1.0",
     resume_from: str | None = None,
+    commit_sha: str = "",
 ) -> PipelineRun:
     run = PipelineRun(id=str(uuid.uuid4()), pipeline_version=version, status="running")
     session.add(run)
@@ -47,7 +52,7 @@ def run_pipeline(
         docs = []
         if start <= 0:
             docs = inventory_directory(session, source_root, repo_name, batch=batch,
-                                       version=version)
+                                       version=version, commit_sha=commit_sha)
             stats["inventory"] = len(docs)
             run.checkpoint = "inventory"
             session.commit()
@@ -65,6 +70,11 @@ def run_pipeline(
                                "office_pages": office.get("pages", 0)}
             elif step == "image_extract":
                 stats[step] = extract_step.run_image_extract(session, docs, source_root)
+            elif step == "vision":
+                stats[step] = {"job_id": vision_step.run(session,
+                                       [p.id for d in docs
+                                        for p in session.query(SourcePage)
+                                        .filter_by(document_id=d.id).all()])}
             elif step == "detect":
                 stats[step] = detect_step.run(session, docs)
             elif step == "link":
@@ -75,6 +85,18 @@ def run_pipeline(
                 stats[step] = dedup_step.run(session, docs)
             elif step == "validate":
                 stats[step] = validate_step.run(session, docs)
+            elif step == "approve":
+                # Questions that passed validation are now in the review queue
+                # (status extracted/validation_required). This step records the
+                # checkpoint; actual approve/reject happens via approve.approve()
+                # or the review UI, never auto-published by the pipeline.
+                ready = session.query(CanonicalQuestion).join(
+                    QuestionReviewStatus,
+                    QuestionReviewStatus.question_id == CanonicalQuestion.id
+                ).filter(QuestionReviewStatus.status.in_(
+                    ["extracted", "validation_required"]
+                )).count()
+                stats[step] = {"ready_for_review": ready}
             run.checkpoint = step
             session.commit()
         run.status = "completed"

@@ -32,6 +32,7 @@ class SourceDocument(Base):
     file_sha256: Mapped[str] = mapped_column(String, nullable=False, index=True)
     file_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     file_type: Mapped[str] = mapped_column(String, nullable=False, default="")
+    commit_sha: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
     rights_status: Mapped[str] = mapped_column(String, nullable=False, default="unknown")
     rights_note: Mapped[str] = mapped_column(Text, default="")
     ingestion_batch: Mapped[str] = mapped_column(String, nullable=False, default="")
