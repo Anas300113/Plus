@@ -19,6 +19,7 @@ from src.pipeline import extract as extract_step
 from src.pipeline import ingest as ingest_step
 from src.pipeline import inventory as inventory_step
 from src.pipeline import link as link_step
+from src.pipeline import ocr as ocr_step
 from src.pipeline import offices as offices_step
 from src.pipeline import approve as approve_step
 from src.pipeline import validate as validate_step
@@ -29,7 +30,7 @@ log = get_logger("pipeline")
 
 STEPS = [
     "inventory", "ingest", "page_extract", "text_extract",
-    "image_extract", "vision", "detect", "link", "classify",
+    "image_extract", "ocr", "vision", "detect", "link", "classify",
     "dedup", "validate", "approve",
 ]
 
@@ -47,6 +48,7 @@ def run_pipeline(
     version: str = "0.1.0",
     resume_from: str | None = None,
     commit_sha: str = "",
+    assets_dir: str | Path = "data/assets",
 ) -> PipelineRun:
     run = PipelineRun(id=str(uuid.uuid4()), pipeline_version=version, status="running")
     session.add(run)
@@ -74,7 +76,12 @@ def run_pipeline(
                 stats[step] = {"pdf_pages": stats[step].get("pages", 0),
                                "office_pages": office.get("pages", 0)}
             elif step == "image_extract":
-                stats[step] = extract_step.run_image_extract(session, docs, source_root)
+                stats[step] = extract_step.run_image_extract(session, docs, source_root, assets_dir)
+            elif step == "ocr":
+                stats[step] = ocr_step.run_ocr(
+                    session, docs,
+                    source_root=source_root,
+                    assets_dir=assets_dir)
             elif step == "vision":
                 stats[step] = {"job_id": vision_step.run(session,
                                        [p.id for d in docs

@@ -38,16 +38,27 @@ def run(session: Session, docs=None) -> dict:
         if not body:
             queued += 1
             continue
+        opts = occ.options_json or []
+        if opts and len(opts) >= 2:
+            options = [{"letter": str(o.get("letter", "")).upper(),
+                        "text": str(o.get("text", ""))}
+                       for o in opts if isinstance(o, dict)]
+            # Keep only options with a single-letter label.
+            options = [o for o in options if len(o["letter"]) == 1]
+        else:
+            options = [{"letter": letter, "text": ""} for letter in "ABCDE"]
         candidate = {
             "subject": "maths", "topic": "general", "question_type": "mcq",
             "correct_answer": occ.linked_answer or "A",
-            "options_json": [{"letter": L, "text": ""} for L in "ABCDE"],
+            "options_json": options if options else None,
         }
         result = validate_canonical_question(candidate)
         if result.passed:
+            kept = candidate["options_json"] or []
             q = CanonicalQuestion(
                 id=str(uuid.uuid4()), subject="maths", topic="general",
                 question_type="mcq", question_text=body,
+                options_json=kept if kept and kept[0].get("text") else None,
                 fingerprint=content_fingerprint(body, ""))
             session.add(q)
             session.flush()

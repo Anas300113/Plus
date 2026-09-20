@@ -24,7 +24,8 @@ def main() -> None:
     session = get_session_factory(engine)()
     run = run_pipeline(session, Path(args.source_root), args.repo_name,
                        args.batch, resume_from=args.resume_from,
-                       commit_sha=args.commit_sha)
+                       commit_sha=args.commit_sha,
+                       assets_dir="data/assets")
     print(f"run={run.id} status={run.status} checkpoint={run.checkpoint}")
     print(f"stats={run.stats_json}")
 

@@ -48,6 +48,9 @@ class SourcePage(Base):
     text_content: Mapped[str] = mapped_column(Text, default="")
     text_confidence: Mapped[float] = mapped_column(Float, default=0.0)
     ocr_used: Mapped[bool] = mapped_column(Boolean, default=False)
+    ocr_text: Mapped[str] = mapped_column(Text, default="", server_default="")
+    ocr_engine: Mapped[str] = mapped_column(String, default="", server_default="")
+    ocr_version: Mapped[str] = mapped_column(String, default="", server_default="")
 
 
 class SourceAsset(Base):
@@ -72,6 +75,7 @@ class QuestionOccurrence(Base):
     document_id: Mapped[str] = mapped_column(String, ForeignKey("source_documents.id"), index=True)
     page_id: Mapped[str] = mapped_column(String, ForeignKey("source_pages.id"))
     question_number: Mapped[str] = mapped_column(String, default="")
+    options_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
     linked_answer: Mapped[str] = mapped_column(String, default="")
     extraction_run: Mapped[str] = mapped_column(String, default="")
     extraction_version: Mapped[str] = mapped_column(String, default="0.1.0")
