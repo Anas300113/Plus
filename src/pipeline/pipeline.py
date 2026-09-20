@@ -9,7 +9,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from src.core.database import (
-    CanonicalQuestion, PipelineRun, QuestionReviewStatus,
+    CanonicalQuestion, PipelineRun, QuestionReviewStatus, SourcePage,
 )
 from src.core.logging import get_logger
 from src.pipeline import classify as classify_step
@@ -32,6 +32,11 @@ STEPS = [
     "image_extract", "vision", "detect", "link", "classify",
     "dedup", "validate", "approve",
 ]
+
+# Pipeline needs source_root available to page_extract and image_extract.
+# Pass it through the docs list via a temporary attribute on the session
+# or as a module-level context. Simpler: add source_root param to steps
+# that need it.
 
 
 def run_pipeline(
@@ -60,9 +65,9 @@ def run_pipeline(
             if STEPS.index(step) < start:
                 continue
             if step == "ingest":
-                stats[step] = ingest_step.run(session, docs, batch)
+                stats[step] = ingest_step.run(session, docs, batch, source_root=source_root)
             elif step == "page_extract":
-                stats[step] = extract_step.run_page_extract(session, docs)
+                stats[step] = extract_step.run_page_extract(session, docs, source_root)
             elif step == "text_extract":
                 stats[step] = extract_step.run_text_extract(session, docs, source_root)
                 office = offices_step.run_office_extract(session, docs, source_root)

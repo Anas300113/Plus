@@ -22,15 +22,52 @@ def _stage_dir(doc: SourceDocument, staging_root: Path) -> Path:
 
 
 def run(session: Session, docs: list[SourceDocument], batch: str,
-        staging_root: str | Path = "data/staged") -> dict:
+        staging_root: str | Path = "data/staged",
+        source_root: str | Path = "") -> dict:
     staging_root = Path(staging_root)
+    staging_root.mkdir(parents=True, exist_ok=True)
     unpacked = 0
     for doc in docs:
         if doc.file_type != "zip":
             continue
-        # ZIP bytes must be resolvable via sources dir; skip gracefully when absent
-        unpacked += 0
-    log.info("ingest: %d docs, %d archives noted (extraction deferred)", len(docs), unpacked)
+        zip_path = Path(doc.source_path)
+        if not zip_path.is_absolute():
+            zip_path = Path(source_root) / doc.source_path if source_root else Path.cwd() / doc.source_path
+        if not zip_path.exists():
+            log.warning("ingest: zip %s not found at %s", doc.source_path, zip_path)
+            continue
+        try:
+            data = zip_path.read_bytes()
+            sha = hashlib.sha256(data).hexdigest()
+            if sha != doc.file_sha256:
+                log.warning("ingest: zip %s sha mismatch (db=%s vs file=%s)",
+                            doc.source_path, doc.file_sha256, sha)
+            stage_dir = _stage_dir(doc, staging_root)
+            names = unpack_zip_bytes(data, stage_dir)
+            # Register unpacked files as new SourceDocuments
+            for name in names:
+                unpacked_file = stage_dir / name
+                sdoc = SourceDocument(
+                    id=str(__import__("uuid").uuid4()),
+                    repo_name=doc.repo_name,
+                    repo_url=doc.repo_url,
+                    source_path=str(unpacked_file.relative_to(staging_root.parent)),
+                    file_sha256=hashlib.sha256(unpacked_file.read_bytes()).hexdigest(),
+                    file_size=unpacked_file.stat().st_size,
+                    file_type="unknown",
+                    rights_status=doc.rights_status,
+                    rights_note=doc.rights_note,
+                    ingestion_batch=batch,
+                    ingestion_version=doc.ingestion_version,
+                    commit_sha=doc.commit_sha,
+                )
+                session.add(sdoc)
+            unpacked += 1
+            log.info("ingest: unpacked %s -> %d files in %s",
+                     doc.source_path, len(names), stage_dir)
+        except Exception as exc:
+            log.warning("ingest: failed to unpack %s: %s", doc.source_path, exc)
+    log.info("ingest: %d docs, %d archives unpacked", len(docs), unpacked)
     return {"documents": len(docs), "archives": unpacked}
 
 

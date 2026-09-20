@@ -33,16 +33,22 @@ def _ensure_pages(session: Session, doc: SourceDocument, count: int) -> list[Sou
     return pages
 
 
-def run_page_extract(session: Session, docs: list[SourceDocument]) -> dict:
+def run_page_extract(session: Session, docs: list[SourceDocument],
+                    source_root: str | Path = "") -> dict:
     total = 0
+    root = Path(source_root) if source_root else Path("data/11-dump-sample")
     for doc in docs:
-        if doc.file_type == "pdf":
-            try:
-                from pypdf import PdfReader
-                # page count requires file bytes; resolved by caller path mapping
-                total += 0
-            except Exception:
-                pass
+        if doc.file_type != "pdf":
+            continue
+        pdf_path = root / doc.source_path
+        if not pdf_path.exists():
+            log.warning("page extract: %s not found at %s", doc.source_path, pdf_path)
+            continue
+        try:
+            pages = extract_pdf_pages(pdf_path, session, doc)
+            total += len(pages)
+        except Exception as exc:
+            log.warning("page extract failed for %s: %s", doc.source_path, exc)
     return {"documents": len(docs), "pages": total}
 
 
