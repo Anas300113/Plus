@@ -7,7 +7,8 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (
-    JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, create_engine,
+    JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text,
+    UniqueConstraint, create_engine,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
@@ -228,16 +229,73 @@ class LearningStudent(Base):
 
 
 class LearningStudySession(Base):
+    """Study session + practice/mock state machine.
+
+    ``session_type``  : learn | practice | review | mock | diagnostic | catch_up
+    ``state``         : session lifecycle, see src/learning/session.py
+    ``question_order_json`` is the frozen ordering for the session so an
+    interrupted session can be resumed deterministically.
+    All new columns carry a ``server_default`` so they can be appended to an
+    existing SQLite database by src/core/migrations.py.
+    """
     __tablename__ = "learning_study_sessions"
     id: Mapped[str] = mapped_column(String, primary_key=True)
     student_id: Mapped[str] = mapped_column(
         String, ForeignKey("learning_students.id"), index=True)
     session_type: Mapped[str] = mapped_column(String, default="practice")
+    state: Mapped[str] = mapped_column(
+        String, default="started", server_default="started", index=True)
+    planned_duration_seconds: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0")
+    actual_duration_seconds: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0")
+    goals_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    recommended_activities_json: Mapped[list | None] = mapped_column(
+        JSON, nullable=True)
+    question_order_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    current_index: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0")
+    skipped_ids_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    accuracy: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
     started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
+    # --- derived helpers (no extra columns, no duplicated state) ---
+    @property
+    def question_order(self) -> list[str]:
+        return list(self.question_order_json or [])
+
+    @property
+    def completion_state(self) -> str:
+        """planned | in_progress | complete | abandoned."""
+        if self.state in ("complete", "abandoned"):
+            return self.state
+        return "in_progress" if self.question_order else "planned"
+
+    @property
+    def questions_remaining(self) -> int:
+        return max(0, len(self.question_order) - (self.current_index or 0))
+
+    @property
+    def progress(self) -> float:
+        total = len(self.question_order)
+        if not total:
+            return 0.0
+        return min(1.0, (self.current_index or 0) / total)
+
 
 class LearningQuestionAttempt(Base):
+    """Evidence of student performance. This is the authoritative record of
+    what a student did; it is never overwritten by scheduling state.
+
+    ``action``          : answer | skip | retry (retry = re-answer of a question)
+    ``attempt_number``  : 1-based attempt of this question within the session
+    ``hint_used``       : student opened hint/explanation before answering
+    ``review_item_id``  : soft reference to learning_review_items.id when the
+                          attempt came from spaced-review practice
+    Accuracy statistics only count ``action == 'answer'`` so that skips and
+    retries do not distort mastery.
+    """
     __tablename__ = "learning_question_attempts"
     id: Mapped[str] = mapped_column(String, primary_key=True)
     student_id: Mapped[str] = mapped_column(
@@ -249,10 +307,19 @@ class LearningQuestionAttempt(Base):
     chosen_answer: Mapped[str] = mapped_column(Text, default="")
     is_correct: Mapped[bool] = mapped_column(Boolean, default=False)
     time_taken_ms: Mapped[int] = mapped_column(Integer, default=0)
+    action: Mapped[str] = mapped_column(
+        String, default="answer", server_default="answer", index=True)
+    attempt_number: Mapped[int] = mapped_column(
+        Integer, default=1, server_default="1")
+    hint_used: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0")
+    review_item_id: Mapped[str] = mapped_column(
+        String, default="", server_default="", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class LearningTopicMastery(Base):
+    """Topic-level mastery aggregate (derived from attempts)."""
     __tablename__ = "learning_topic_mastery"
     student_id: Mapped[str] = mapped_column(
         String, ForeignKey("learning_students.id"), primary_key=True)
@@ -261,17 +328,110 @@ class LearningTopicMastery(Base):
     accuracy: Mapped[float] = mapped_column(Float, default=0.0)
     times_practiced: Mapped[int] = mapped_column(Integer, default=0)
     times_correct: Mapped[int] = mapped_column(Integer, default=0)
+    last_practiced_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True)
 
 
+
+
+class LearningSkillMastery(Base):
+    """Skill-level mastery aggregate, derived from attempts joined to the
+    ``skill_ids`` declared on CanonicalQuestion. Sits between attempt
+    evidence and TopicMastery; it does not schedule anything itself."""
+    __tablename__ = "learning_skill_mastery"
+    student_id: Mapped[str] = mapped_column(
+        String, ForeignKey("learning_students.id"), primary_key=True)
+    skill_id: Mapped[str] = mapped_column(
+        String, ForeignKey("canonical_skills.id"), primary_key=True)
+    topic_id: Mapped[str] = mapped_column(String, default="", server_default="")
+    subject: Mapped[str] = mapped_column(String, default="", server_default="")
+    accuracy: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
+    times_practiced: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0")
+    times_correct: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0")
+    last_practiced_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True)
+
+
+class LearningReviewItem(Base):
+    """What should be reviewed, and when.
+
+    This is *scheduling state*, deliberately separate from:
+      * ``LearningQuestionAttempt`` - evidence of what happened
+      * ``LearningSkillMastery`` / ``LearningTopicMastery`` - learning state
+      * ``CanonicalQuestion`` - the educational content itself
+      * ``LearningRecommendation`` - what to do next
+
+    ``source_type``/``source_id`` is a soft reference (no FK) so the same
+    table can schedule questions now, and lesson / strategy / worked-example
+    review later, without introducing a broad ``LearningItem`` abstraction.
+
+    Scheduling is a deterministic interval ladder (see src/learning/review.py).
+    FSRS is deliberately NOT implemented.
+    """
+    __tablename__ = "learning_review_items"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    student_id: Mapped[str] = mapped_column(
+        String, ForeignKey("learning_students.id"), index=True)
+    source_type: Mapped[str] = mapped_column(
+        String, default="question", server_default="question", index=True)
+    source_id: Mapped[str] = mapped_column(String, index=True)
+    subject: Mapped[str] = mapped_column(String, default="", server_default="")
+    topic_id: Mapped[str] = mapped_column(
+        String, default="", server_default="", index=True)
+    question_type: Mapped[str] = mapped_column(
+        String, default="", server_default="")
+    skill_ids_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    state: Mapped[str] = mapped_column(
+        String, default="learning", server_default="learning", index=True)
+    due_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, index=True)
+    last_reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True)
+    interval_days: Mapped[float] = mapped_column(
+        Float, default=1.0, server_default="1")
+    review_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0")
+    correct_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0")
+    consecutive_correct: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0")
+    last_result: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    difficulty: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    due_reason: Mapped[str] = mapped_column(String, default="", server_default="")
+    origin_attempt_id: Mapped[str] = mapped_column(
+        String, default="", server_default="")
+    origin_session_id: Mapped[str] = mapped_column(
+        String, default="", server_default="")
+    review_history_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    __table_args__ = (
+        UniqueConstraint("student_id", "source_type", "source_id",
+                         name="uq_review_item_source"),
+    )
 
 
 class LearningRecommendation(Base):
+    """Deterministic recommendation of what the student should do next.
+
+    ``kind``: learn | practice | review | mock | catch_up
+    """
     __tablename__ = "learning_recommendations"
     id: Mapped[str] = mapped_column(String, primary_key=True)
     student_id: Mapped[str] = mapped_column(
         String, ForeignKey("learning_students.id"), index=True)
-    reason: Mapped[str] = mapped_column(String, default="")
+    kind: Mapped[str] = mapped_column(
+        String, default="practice", server_default="practice", index=True)
+    reason: Mapped[str] = mapped_column(String, default="", server_default="")
+    summary: Mapped[str] = mapped_column(Text, default="", server_default="")
+    status: Mapped[str] = mapped_column(
+        String, default="open", server_default="open", index=True)
     question_ids_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    topic_ids_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    skill_ids_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    review_item_ids_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -340,4 +500,12 @@ def get_session_factory(engine):
 
 
 def init_db(engine) -> None:
-    Base.metadata.create_all(bind=engine)
+    """Create the schema and apply additive column migrations.
+
+    Delegates to src/core/migrations.ensure_schema so an existing database
+    (e.g. ./elevenplus.db) gains new learning-layer columns without a wipe.
+    Alembic remains the deferred long-term answer for destructive changes.
+    """
+    from src.core.migrations import ensure_schema
+
+    ensure_schema(engine)

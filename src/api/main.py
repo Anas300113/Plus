@@ -1,5 +1,10 @@
 """FastAPI application: approved questions, practice sessions,
-review queue. Only APPROVED questions are student-facing."""
+review queue. Only APPROVED questions are student-facing.
+
+Learning-layer endpoints (session state machine, statistics, review items,
+educational loop) live in src/learning/*; the routes here are thin wrappers
+that translate HTTP into those functions and never re-implement their rules.
+"""
 from __future__ import annotations
 
 import os
@@ -15,9 +20,8 @@ from src.api.dashboard_pages import HOME, LEARN, MOCKS, PARENT, PROGRESS
 from src.api.practice_page import PRACTICE_HTML
 
 from src.core.database import (
-    CanonicalQuestion, LearningQuestionAttempt, LearningStudent,
-    LearningStudySession, QuestionReviewStatus, get_engine,
-    get_session_factory, init_db,
+    CanonicalQuestion, QuestionReviewStatus, get_engine, get_session_factory,
+    init_db,
 )
 
 DB_URL = os.environ.get("PLUS_DATABASE_URL", "sqlite:///./elevenplus.db")
@@ -43,6 +47,8 @@ class AnswerIn(BaseModel):
     question_id: str
     chosen_answer: str
     time_taken_ms: int = 0
+    action: str = "answer"
+    hint_used: bool = False
 
 
 @app.get("/api/health")
@@ -100,21 +106,161 @@ def list_questions(subject: str | None = None, topic: str | None = None,
 
 @app.post("/api/sessions")
 def create_session(student_id: str, session_type: str = "practice",
+                   subject: str | None = None, topic: str | None = None,
+                   limit: int = 20, planned_duration_seconds: int = 0,
+                   from_review_queue: bool = False, seed: int = 42,
                    db: Session = Depends(get_db)):
-    student = db.query(LearningStudent).filter_by(id=student_id).first()
-    if student is None:
-        student = LearningStudent(id=student_id, name=student_id)
-        db.add(student)
-        db.commit()
-    s = LearningStudySession(id=str(uuid.uuid4()), student_id=student.id,
-                             session_type=session_type)
-    db.add(s)
-    db.commit()
-    return {"session_id": s.id}
+    """Start a session through the explicit state machine.
+
+    Backwards compatible: with only ``student_id`` supplied it behaves as
+    before, but the question order is now frozen so the session can be resumed.
+    """
+    from src.learning.session import start_session
+    try:
+        s = start_session(
+            db, student_id, session_type=session_type, subject=subject,
+            topic=topic, limit=limit,
+            planned_duration_seconds=planned_duration_seconds, seed=seed,
+            from_review_queue=from_review_queue)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"session_id": s.id, "state": s.state,
+            "session_type": s.session_type,
+            "total": len(s.question_order)}
+
+
+class SessionStartIn(BaseModel):
+    student_id: str
+    session_type: str = "practice"
+    subject: str | None = None
+    topic: str | None = None
+    question_ids: list[str] = []
+    limit: int = 20
+    ordering: str = "canonical"
+    seed: int = 42
+    planned_duration_seconds: int = 0
+    goals: dict = {}
+    from_review_queue: bool = False
+
+
+@app.post("/api/sessions/start")
+def start_session_route(payload: SessionStartIn, db: Session = Depends(get_db)):
+    """Body-based session start (frozen order, goals, review-queue support)."""
+    from src.learning.session import start_session
+    try:
+        s = start_session(
+            db, payload.student_id, session_type=payload.session_type,
+            question_ids=payload.question_ids, subject=payload.subject,
+            topic=payload.topic, limit=payload.limit,
+            ordering=payload.ordering, seed=payload.seed,
+            planned_duration_seconds=payload.planned_duration_seconds,
+            goals=payload.goals, from_review_queue=payload.from_review_queue)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"session_id": s.id, "state": s.state,
+            "total": len(s.question_order),
+            "question_order": s.question_order}
+
+
+@app.get("/api/sessions/{session_id}")
+def get_session_state(session_id: str, db: Session = Depends(get_db)):
+    """Resume payload: current question, index, progress, goals, activities."""
+    from src.learning.session import session_state
+    try:
+        return session_state(db, session_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+
+
+class SubmitIn(BaseModel):
+    question_id: str = ""
+    chosen_answer: str = ""
+    time_taken_ms: int = 0
+    hint_used: bool = False
+    action: str = "answer"  # answer | skip | retry
+
+
+@app.post("/api/sessions/{session_id}/answer")
+def session_answer(session_id: str, payload: SubmitIn,
+                   db: Session = Depends(get_db)):
+    """ASSESS + EXPLAIN: record evidence, return feedback, schedule review."""
+    from src.learning.session import submit_answer
+    try:
+        # Retries are re-attempts on a previously-answered question, so they
+        # are not required to be the session's "current" question.
+        enforce = payload.action != "retry"
+        return submit_answer(db, session_id, payload.question_id,
+                             payload.chosen_answer, payload.time_taken_ms,
+                             hint_used=payload.hint_used, action=payload.action,
+                             enforce_current=enforce)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/sessions/{session_id}/skip")
+def session_skip(session_id: str, payload: SubmitIn | None = None,
+                 db: Session = Depends(get_db)):
+    """SKIP: stored as evidence, creates a review item, never counts as wrong."""
+    from src.learning.session import skip_current
+    question_id = (payload.question_id if payload and payload.question_id
+                   else None)
+    try:
+        return skip_current(db, session_id,
+                            payload.time_taken_ms if payload else 0,
+                            question_id=question_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/sessions/{session_id}/retry")
+def session_retry(session_id: str, db: Session = Depends(get_db)):
+    """RETRY: allow a re-answer of the current question (hint returned)."""
+    from src.learning.session import retry_current
+    try:
+        return retry_current(db, session_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/sessions/{session_id}/complete")
+def session_complete(session_id: str, db: Session = Depends(get_db)):
+    """COMPLETE: results view, mastery refresh, new recommendations."""
+    from src.learning.session import complete_session
+    try:
+        return complete_session(db, session_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.post("/api/sessions/{session_id}/abandon")
+def session_abandon(session_id: str, db: Session = Depends(get_db)):
+    """ABANDON: close the session, keep all attempt evidence."""
+    from src.learning.session import abandon_session
+    try:
+        return abandon_session(db, session_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.get("/api/sessions/{session_id}/results")
+def session_results_route(session_id: str, db: Session = Depends(get_db)):
+    from src.learning.session import session_results
+    try:
+        return session_results(db, session_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
 
 
 @app.post("/api/attempts")
 def record_attempt(payload: AnswerIn, db: Session = Depends(get_db)):
+    """Legacy evidence endpoint, kept for compatibility.
+
+    Prefer ``POST /api/sessions/{id}/answer``. This path records evidence for
+    a question that may not be the session's frozen current question, so it
+    runs the same logic with ``enforce_current=False``. It never advances the
+    session cursor and it still refuses non-approved questions.
+    """
+    from src.learning.session import get_session, submit_answer
     q = db.query(CanonicalQuestion).filter_by(id=payload.question_id).first()
     if q is None:
         raise HTTPException(404, "question not found")
@@ -122,14 +268,18 @@ def record_attempt(payload: AnswerIn, db: Session = Depends(get_db)):
         question_id=q.id).first()
     if status is None or status.status != "approved":
         raise HTTPException(403, "question is not approved for practice")
-    correct = payload.chosen_answer.strip().upper() == q.correct_answer.strip().upper()
-    db.add(LearningQuestionAttempt(
-        id=str(uuid.uuid4()), student_id=payload.student_id,
-        session_id=payload.session_id, question_id=q.id,
-        chosen_answer=payload.chosen_answer, is_correct=correct,
-        time_taken_ms=payload.time_taken_ms))
-    db.commit()
-    return {"is_correct": correct, "explanation": q.explanation}
+    try:
+        session = get_session(db, payload.session_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+    result = submit_answer(
+        db, session.id, q.id, payload.chosen_answer,
+        time_taken_ms=payload.time_taken_ms, hint_used=payload.hint_used,
+        action=payload.action, enforce_current=False)
+    return {"is_correct": result["is_correct"],
+            "explanation": q.explanation,
+            "feedback": result["feedback"],
+            "review_item_id": result["review_item_id"]}
 
 
 @app.get("/api/review-queue")
@@ -160,12 +310,95 @@ def review(question_id: str, payload: ReviewIn, db: Session = Depends(get_db)):
 
 @app.get("/api/progress/{student_id}")
 def progress(student_id: str, db: Session = Depends(get_db)):
-    from src.learning.weak_area import refresh_topic_mastery, weak_topics
-    refresh_topic_mastery(db, student_id)
+    """Progress view: mastery refresh, weak topics (existing shape) + extras."""
+    from src.learning.review import review_summary
+    from src.learning.weak_area import (
+        open_recommendations, refresh_mastery, weak_skills, weak_topics,
+    )
+    refresh_mastery(db, student_id)
     weak = weak_topics(db, student_id)
-    return {"weak_topics": [
-        {"topic": w.topic_id, "accuracy": w.accuracy,
-         "practiced": w.times_practiced} for w in weak]}
+    skills = weak_skills(db, student_id)
+    return {
+        "student_id": student_id,
+        "weak_topics": [
+            {"topic": w.topic_id, "accuracy": w.accuracy,
+             "practiced": w.times_practiced} for w in weak],
+        "weak_skills": [
+            {"skill": s.skill_id, "topic": s.topic_id, "accuracy": s.accuracy,
+             "practiced": s.times_practiced} for s in skills],
+        "review": review_summary(db, student_id),
+        "recommendations": open_recommendations(db, student_id),
+    }
+
+
+@app.get("/api/statistics/{student_id}")
+def statistics_route(student_id: str, days: int = 14,
+                     recent_window: int = 20,
+                     db: Session = Depends(get_db)):
+    """Deterministic learning statistics (subject/topic/skill/type/review)."""
+    from src.learning.statistics import student_statistics
+    from src.learning.weak_area import refresh_mastery
+    refresh_mastery(db, student_id)
+    return student_statistics(db, student_id, recent_window=recent_window,
+                              days=days)
+
+
+@app.get("/api/reviews/{student_id}")
+def reviews_route(student_id: str, limit: int = 50,
+                  db: Session = Depends(get_db)):
+    """ReviewItem state for a student: due now, upcoming, per-state counts.
+
+    Scheduling only - no FSRS. See src/learning/review.py.
+    """
+    from src.learning.review import due_review_items, review_summary
+    due = due_review_items(db, student_id, limit=limit)
+    summary = review_summary(db, student_id)
+    return {
+        "summary": summary,
+        "due": [{"id": r.id, "source_type": r.source_type,
+                 "source_id": r.source_id, "topic": r.topic_id,
+                 "subject": r.subject, "state": r.state,
+                 "due_at": r.due_at.isoformat() if r.due_at else "",
+                 "due_reason": r.due_reason, "interval_days": r.interval_days,
+                 "review_count": r.review_count,
+                 "consecutive_correct": r.consecutive_correct} for r in due],
+    }
+
+
+@app.get("/api/recommendations/{student_id}")
+def recommendations_route(student_id: str, refresh: bool = False,
+                          db: Session = Depends(get_db)):
+    """What the student should do next (deterministic, no LLM)."""
+    from src.learning.weak_area import (
+        open_recommendations, refresh_recommendations,
+    )
+    if refresh:
+        return {"recommendations": refresh_recommendations(db, student_id)}
+    return {"recommendations": open_recommendations(db, student_id)}
+
+
+@app.get("/api/loop/{student_id}")
+def loop_route(student_id: str, db: Session = Depends(get_db)):
+    """The educational loop snapshot:
+    LEARN -> PRACTISE -> ASSESS -> IDENTIFY ERROR -> EXPLAIN -> REVIEW ->
+    RE-PRACTISE -> UPDATE MASTERY. Works without any LLM call.
+    """
+    from src.learning.loop import loop_snapshot
+    from src.learning.weak_area import refresh_mastery
+    # UPDATE MASTERY step: recompute from fresh evidence before reading
+    refresh_mastery(db, student_id)
+    return loop_snapshot(db, student_id)
+
+
+@app.get("/api/system/statistics")
+def system_statistics_route(limit: int = 50, db: Session = Depends(get_db)):
+    """Content-health view: validation status counts, hardest questions.
+
+    Item-discrimination figures are indicative only and reported as ``None``
+    until enough students have answered.
+    """
+    from src.learning.statistics import system_statistics
+    return system_statistics(db, limit=limit)
 
 
 @app.get("/api/curriculum/{topic_id}")

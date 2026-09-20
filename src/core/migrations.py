@@ -1,0 +1,103 @@
+"""Lightweight additive schema migration for the 11+ platform.
+
+Scope (deliberately small):
+  * create any missing tables from the SQLAlchemy metadata
+  * append any missing *columns* to existing tables (additive only)
+  * record what was applied in ``schema_migrations`` so re-runs are no-ops
+
+This is not a replacement for a real migration tool. Alembic is the intended
+long-term answer for destructive/renaming changes; it is deferred until the
+schema stabilises. Every new learning-layer column declares a ``server_default``
+so ``ALTER TABLE ... ADD COLUMN`` satisfies SQLite's NOT NULL rule and an
+existing database keeps working without a wipe.
+"""
+from __future__ import annotations
+
+from sqlalchemy import inspect
+from sqlalchemy.schema import CreateColumn, CreateIndex
+
+from src.core.database import Base, utcnow
+
+SCHEMA_VERSION = "0.2.0-learning"
+_MIGRATION_TABLE = "schema_migrations"
+
+
+def _ensure_migration_table(conn) -> None:
+    conn.exec_driver_sql(
+        f"CREATE TABLE IF NOT EXISTS {_MIGRATION_TABLE} ("
+        "id TEXT PRIMARY KEY, applied_at TEXT NOT NULL)")
+
+
+def applied_migrations(engine) -> set[str]:
+    """Ids of migrations already applied (empty if the table is absent)."""
+    insp = inspect(engine)
+    if not insp.has_table(_MIGRATION_TABLE):
+        return set()
+    with engine.connect() as conn:
+        return {row[0] for row in conn.exec_driver_sql(
+            f"SELECT id FROM {_MIGRATION_TABLE}")}
+
+
+def _pending_columns(engine) -> list[tuple[str, str]]:
+    """[(table, column)] that exist in the metadata but not in the database."""
+    insp = inspect(engine)
+    pending: list[tuple[str, str]] = []
+    for table in Base.metadata.sorted_tables:
+        if not insp.has_table(table.name):
+            continue
+        existing = {c["name"] for c in insp.get_columns(table.name)}
+        for column in table.columns:
+            if column.name not in existing:
+                pending.append((table.name, column.name))
+    return pending
+
+
+def ensure_schema(engine) -> list[str]:
+    """Create tables, add missing columns, return newly applied migration ids.
+
+    Idempotent: calling repeatedly applies nothing and returns ``[]``.
+    """
+    Base.metadata.create_all(bind=engine)
+    pending = _pending_columns(engine)
+    if not pending:
+        _ensure_migration_table_exists(engine)
+        return []
+
+    tables = {t.name: t for t in Base.metadata.sorted_tables}
+    applied: list[str] = []
+    touched = {t for t, _ in pending}
+    with engine.begin() as conn:
+        _ensure_migration_table(conn)
+        for table_name, column_name in pending:
+            column = tables[table_name].columns[column_name]
+            ddl = str(CreateColumn(column).compile(dialect=engine.dialect))
+            conn.exec_driver_sql(
+                f'ALTER TABLE "{table_name}" ADD COLUMN {ddl}')
+            migration_id = f"{SCHEMA_VERSION}:{table_name}.{column_name}"
+            conn.exec_driver_sql(
+                f"INSERT OR IGNORE INTO {_MIGRATION_TABLE} VALUES (?, ?)",
+                (migration_id, utcnow().isoformat()))
+            applied.append(migration_id)
+    _create_missing_indexes(engine, touched, applied)
+    return applied
+
+
+def _create_missing_indexes(engine, table_names: set[str],
+                            applied: list[str]) -> None:
+    """Backfill indexes for columns added by ALTER (index=True only)."""
+    insp = inspect(engine)
+    for table_name in sorted(table_names):
+        table = Base.metadata.tables[table_name]
+        existing = {ix["name"] for ix in insp.get_indexes(table_name)}
+        for index in table.indexes:
+            if index.name in existing:
+                continue
+            with engine.begin() as conn:
+                conn.exec_driver_sql(str(CreateIndex(index).compile(
+                    dialect=engine.dialect)))
+            applied.append(f"{SCHEMA_VERSION}:{table_name}.index:{index.name}")
+
+
+def _ensure_migration_table_exists(engine) -> None:
+    with engine.begin() as conn:
+        _ensure_migration_table(conn)
