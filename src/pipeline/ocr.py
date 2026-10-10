@@ -34,6 +34,15 @@ def is_scanned_page(page: SourcePage) -> bool:
     return True
 
 
+def _tesseract_version() -> str:
+    """Best-effort Tesseract version string; 'unavailable' when absent."""
+    try:
+        import pytesseract
+        return str(pytesseract.get_tesseract_version())
+    except Exception:
+        return "unavailable"
+
+
 def ocr_page(session: Session, page: SourcePage,
              image_bytes: bytes | None = None,
              engine: str = "tesseract",
@@ -67,8 +76,10 @@ def run_ocr(session: Session, docs: list["SourceDocument"],
             source_root: str | Path = "",
             assets_dir: str | Path = "data/assets",
             engine: str = "tesseract",
-            version: str = "unknown") -> dict:
+            version: str = "") -> dict:
     """OCR scanned pages. Only pages without reliable native text."""
+    if not version:
+        version = _tesseract_version()
     root = Path(source_root) if source_root else Path.cwd()
     assets_dir = Path(assets_dir)
     ocred = 0

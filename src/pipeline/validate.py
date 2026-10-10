@@ -31,6 +31,7 @@ def _body_for(session: Session, occ: QuestionOccurrence) -> str:
 def run(session: Session, docs=None) -> dict:
     promoted = 0
     queued = 0
+    queued_no_options = 0
     for occ in session.query(QuestionOccurrence).all():
         if occ.canonical_question_id:
             continue
@@ -53,6 +54,13 @@ def run(session: Session, docs=None) -> dict:
             "options_json": options if options else None,
         }
         result = validate_canonical_question(candidate)
+        if not options or not options[0].get("text"):
+            # No real option text was extracted. Promoting would require
+            # inventing placeholder options, so the occurrence stays queued
+            # for human review instead.
+            queued_no_options += 1
+            queued += 1
+            continue
         if result.passed:
             kept = candidate["options_json"] or []
             q = CanonicalQuestion(
@@ -70,5 +78,7 @@ def run(session: Session, docs=None) -> dict:
         else:
             queued += 1
     session.commit()
-    log.info("validate: %d promoted, %d queued", promoted, queued)
-    return {"promoted": promoted, "queued": queued}
+    log.info("validate: %d promoted, %d queued (%d without real option text)",
+             promoted, queued, queued_no_options)
+    return {"promoted": promoted, "queued": queued,
+            "queued_no_options": queued_no_options}

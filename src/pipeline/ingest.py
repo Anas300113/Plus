@@ -27,6 +27,7 @@ def run(session: Session, docs: list[SourceDocument], batch: str,
     staging_root = Path(staging_root)
     staging_root.mkdir(parents=True, exist_ok=True)
     unpacked = 0
+    archives = 0
     for doc in docs:
         if doc.file_type != "zip":
             continue
@@ -44,14 +45,23 @@ def run(session: Session, docs: list[SourceDocument], batch: str,
                             doc.source_path, doc.file_sha256, sha)
             stage_dir = _stage_dir(doc, staging_root)
             names = unpack_zip_bytes(data, stage_dir)
-            # Register unpacked files as new SourceDocuments
+            # Register unpacked files as new SourceDocuments (idempotently:
+            # skip any (repo_name, source_path) already registered).
+            session.flush()  # make pending rows visible to the exists() check
+            created = 0
             for name in names:
                 unpacked_file = stage_dir / name
+                rel_path = str(unpacked_file.relative_to(staging_root.parent))
+                exists = (session.query(SourceDocument)
+                          .filter_by(repo_name=doc.repo_name,
+                                     source_path=rel_path).first())
+                if exists:
+                    continue
                 sdoc = SourceDocument(
                     id=str(__import__("uuid").uuid4()),
                     repo_name=doc.repo_name,
                     repo_url=doc.repo_url,
-                    source_path=str(unpacked_file.relative_to(staging_root.parent)),
+                    source_path=rel_path,
                     file_sha256=hashlib.sha256(unpacked_file.read_bytes()).hexdigest(),
                     file_size=unpacked_file.stat().st_size,
                     file_type="unknown",
@@ -62,13 +72,16 @@ def run(session: Session, docs: list[SourceDocument], batch: str,
                     commit_sha=doc.commit_sha,
                 )
                 session.add(sdoc)
-            unpacked += 1
-            log.info("ingest: unpacked %s -> %d files in %s",
-                     doc.source_path, len(names), stage_dir)
+                created += 1
+                unpacked += 1
+                log.info("ingest: unpacked %s -> %d files (%d new docs) in %s",
+                         doc.source_path, len(names), created, stage_dir)
+            archives += 1
         except Exception as exc:
             log.warning("ingest: failed to unpack %s: %s", doc.source_path, exc)
-    log.info("ingest: %d docs, %d archives unpacked", len(docs), unpacked)
-    return {"documents": len(docs), "archives": unpacked}
+    session.commit()
+    log.info("ingest: %d docs, %d archives unpacked", len(docs), archives)
+    return {"documents": len(docs), "archives": archives, "files_unpacked": unpacked}
 
 
 def unpack_zip_bytes(data: bytes, dest: Path) -> list[str]:

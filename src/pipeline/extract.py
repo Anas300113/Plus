@@ -116,39 +116,56 @@ def run_image_extract(session: Session, docs: list[SourceDocument],
 
 def _extract_pdf_images(session: Session, doc: SourceDocument, pdf_path: Path,
                         assets_dir: Path) -> int:
+    """Extract embedded images per page with PyMuPDF.
+
+    Deterministic and idempotent: one SourceAsset row per (sha256, page).
+    The same image recurring on several pages keeps one row per page so
+    page-level provenance is preserved; the bytes on disk are shared.
+    """
     count = 0
     try:
-        from pypdf import PdfReader
-        reader = PdfReader(str(pdf_path))
-        pages = {p.page_number: p for p in session.query(SourcePage)
-                 .filter_by(document_id=doc.id).all()}
-        for n, page in enumerate(reader.pages, start=1):
-            try:
-                for img in page.images:
-                    data = img.data
-                    ext = ".png" if "png" in img.name.lower() else ".jpg"
-                    count += _store_image_asset(
-                        session, doc,
-                        pages.get(n).id if n in pages else None,
-                        data, ext, assets_dir)
-            except Exception as exc:
-                log.warning("image extract failed p%s of %s: %s",
-                            n, doc.source_path, exc)
+        import fitz
+    except Exception as exc:
+        log.warning("image extract: fitz unavailable for %s: %s",
+                    doc.source_path, exc)
+        return 0
+    pages = {p.page_number: p for p in session.query(SourcePage)
+             .filter_by(document_id=doc.id).all()}
+    try:
+        with fitz.open(str(pdf_path)) as pdf:
+            for n in range(1, pdf.page_count + 1):
+                page_row = pages.get(n)
+                try:
+                    for img in pdf[n - 1].get_images(full=True):
+                        xref = img[0]
+                        info = pdf.extract_image(xref)
+                        data = info["image"]
+                        ext = "." + info.get("ext", "png")
+                        count += _store_image_asset(
+                            session, doc,
+                            page_row.id if page_row else None,
+                            data, ext, assets_dir)
+                except Exception as exc:
+                    log.warning("image extract failed p%s of %s: %s",
+                                n, doc.source_path, exc)
     except Exception as exc:
         log.warning("pdf image pass failed for %s: %s", doc.source_path, exc)
+    session.commit()
     return count
 
 
 def _store_image_asset(session: Session, doc: SourceDocument, page_id: str | None,
                        data: bytes, ext: str, assets_dir: Path) -> int:
     sha = sha256_bytes(data)
-    exists = session.query(SourceAsset).filter_by(sha256=sha).first()
+    session.flush()  # make pending rows visible to the check (autoflush=False)
+    exists = session.query(SourceAsset).filter_by(sha256=sha, page_id=page_id).first()
     if exists:
-        return 0  # idempotent
+        return 0  # idempotent per (sha, page)
     rel = Path(sha[:2]) / (sha + ext)
     dest = assets_dir / rel
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(data)
+    if not dest.exists():
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
     session.add(SourceAsset(id=str(uuid.uuid4()), document_id=doc.id,
                             page_id=page_id, asset_type="raster",
                             mime_type="image/png" if ext == ".png" else "image/jpeg",
