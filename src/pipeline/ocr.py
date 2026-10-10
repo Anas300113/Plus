@@ -9,6 +9,7 @@ OCR remains extraction data, not canonical content.
 from __future__ import annotations
 
 import io
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -24,6 +25,43 @@ log = get_logger("pipeline.ocr")
 
 MIN_NATIVE_TEXT_CHARS = 40
 
+# Tesseract is frequently installed but not on PATH (e.g. the default Windows
+# installer puts it under "C:\\Program Files\\Tesseract-OCR"). Point
+# PLUS_TESSERACT_CMD at the executable so OCR works without PATH changes. This
+# is an *environment configuration* control, distinct from an extraction failure.
+TESSERACT_CMD_ENV = "PLUS_TESSERACT_CMD"
+
+
+def resolve_tesseract_cmd() -> str | None:
+    """Return the configured tesseract executable path, or None.
+
+    Lets the operator make an installed-but-off-PATH Tesseract usable. When
+    unset, pytesseract falls back to whatever is on PATH (or fails clearly).
+    """
+    cmd = os.environ.get(TESSERACT_CMD_ENV, "").strip()
+    return cmd or None
+
+
+def _apply_tesseract_cmd(pytesseract_mod) -> None:
+    """Point pytesseract at PLUS_TESSERACT_CMD when it is configured."""
+    cmd = resolve_tesseract_cmd()
+    if cmd:
+        pytesseract_mod.pytesseract.tesseract_cmd = cmd
+
+
+def ocr_engine_status() -> dict:
+    """Report Tesseract availability. Distinguishes a configuration problem
+    (binary missing / wrong path) from an extraction failure."""
+    cmd = resolve_tesseract_cmd()
+    try:
+        import pytesseract
+        _apply_tesseract_cmd(pytesseract)
+        version = str(pytesseract.get_tesseract_version())
+        return {"available": True, "version": version, "configured_cmd": cmd}
+    except Exception as exc:  # binary absent, misconfigured, or off-PATH
+        return {"available": False, "version": "unavailable",
+                "configured_cmd": cmd, "error": str(exc)}
+
 
 def is_scanned_page(page: SourcePage) -> bool:
     """Page likely needs OCR when no reliable native text exists."""
@@ -38,6 +76,7 @@ def _tesseract_version() -> str:
     """Best-effort Tesseract version string; 'unavailable' when absent."""
     try:
         import pytesseract
+        _apply_tesseract_cmd(pytesseract)
         return str(pytesseract.get_tesseract_version())
     except Exception:
         return "unavailable"
@@ -55,6 +94,7 @@ def ocr_page(session: Session, page: SourcePage,
     try:
         from PIL import Image
         import pytesseract
+        _apply_tesseract_cmd(pytesseract)  # honour PLUS_TESSERACT_CMD (off-PATH)
         img = Image.open(io.BytesIO(image_bytes))
         img = img.resize((img.width * 2, img.height * 2), Image.LANCZOS)
         text = pytesseract.image_to_string(img).strip()
