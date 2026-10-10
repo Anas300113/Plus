@@ -68,3 +68,53 @@ document.getElementById('out').innerHTML='<div class=card><b>Practice completed:
 +'<h3>Recommended next steps</h3><ul>'+(d.recommended_next_steps.map(s=>'<li>'+s+'</li>').join('')||'<li class=muted>Keep practising.</li>')+'</ul>'
 +'<h3>Recent activity</h3><ul>'+(d.recent_activity.map(a=>'<li>'+a.question_id.slice(0,8)+' - '+(a.correct?'correct':'incorrect')+'</li>').join('')||'<li class=muted>None.</li>')+'</ul>';}
 load();</script>""")
+
+
+# Reviewer workbench: browse candidates, inspect source provenance, verify
+# answer/explanation, edit, and approve/reject. Reuses the same design system.
+REVIEW = _page("Review", """<h1>Question review</h1>
+<p class=muted>Server-side token required for changes. Set <code>PLUS_REVIEWER_TOKEN</code>
+and paste it below. Approval is blocked until every requirement is met.</p>
+<label>Reviewer token <input id=tok type=password placeholder=\"token\"></label>
+<button onclick=loadQueue()>Load queue</button>
+<div id=queue></div><div id=detail></div>
+<script>
+const api=async(u,o)=>{const h={'Content-Type':'application/json'};
+const t=document.getElementById('tok').value;if(t)h['X-Reviewer-Token']=t;
+const r=await fetch(u,{method:o?'POST':'GET',headers:h,body:o?JSON.stringify(o):undefined});
+return {ok:r.ok,status:r.status,data:await r.json().catch(()=>({}))};};
+async function loadQueue(){const r=await api('/api/review-queue?limit=50');
+document.getElementById('queue').innerHTML=r.data.length?
+'<table><tr><th>Subject/topic</th><th>Status</th><th></th></tr>'+r.data.map(q=>
+'<tr><td>'+q.subject+'/'+q.topic+'</td><td>'+q.status+'</td>'+
+'<td><button onclick=loadDetail(\\''+q.id+'\\')>Open</button></td></tr>').join('')+'</table>'
+:'<p class=muted>No candidates awaiting review.</p>';}
+async function loadDetail(id){const r=await api('/api/review/'+id);const d=r.data;
+const blockers=(d.approval_blockers||[]).map(b=>'<li>'+b+'</li>').join('');
+const opts=(d.options||[]).map(o=>'<li>'+(o.letter||o.label||'')+'. '+(o.text||o)+'</li>').join('');
+const prov=(d.provenance||[]).map(p=>'doc '+p.document_id+' page '+p.page_id+
+' #'+p.question_number).join('; ');
+document.getElementById('detail').innerHTML='<div class=card><b>'+d.question_text+'</b>'+
+'<p class=muted>Type: '+d.question_type+' | Review: '+d.review_status+
+' | Answer: '+d.answer_status+' | Explanation: '+d.explanation_status+'</p>'+
+'<p class=muted>Provenance: '+(prov||'none')+'</p><ul>'+opts+'</ul>'+
+'<p><b>Answer:</b> '+d.correct_answer+' <b>Explanation:</b> '+(d.explanation||'—')+'</p>'+
+(blockers?'<p style=color:#a00><b>Blocked:</b><ul>'+blockers+'</ul></p>'
+:'<p style=color:#080><b>Eligible to approve.</b></p>')+
+'<input id=ev placeholder=\"answer evidence (source ref)\" size=30> '+
+'<button onclick=verifyA(\\''+id+'\\')>Verify answer</button> '+
+'<button onclick=verifyE(\\''+id+'\\')>Verify explanation</button><br>'+
+'<input id=ex placeholder=\"explanation text\" size=40> '+
+'<button onclick=editQ(\\''+id+'\\')>Save edit</button><br>'+
+'<button onclick=decide(\\''+id+'\\',\\'approved\\')>Approve</button> '+
+'<button onclick=decide(\\''+id+'\\',\\'rejected\\')>Reject</button></div>';}
+async function verifyA(id){await api('/api/review/'+id+'/verify-answer',
+{reviewer:'ui',evidence:document.getElementById('ev').value});loadDetail(id);}
+async function verifyE(id){await api('/api/review/'+id+'/verify-explanation',
+{reviewer:'ui',evidence:document.getElementById('ev').value});loadDetail(id);}
+async function editQ(id){await api('/api/review/'+id+'/edit',
+{reviewer:'ui',explanation:document.getElementById('ex').value});loadDetail(id);}
+async function decide(id,s){const r=await api('/api/review/'+id,
+{status:s,reviewer:'ui'});alert(r.ok?('Now '+s):(r.status+': '+JSON.stringify(r.data)));loadDetail(id);}
+</script>\"\"\")
+load();</script>""")

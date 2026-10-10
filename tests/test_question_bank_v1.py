@@ -339,3 +339,17 @@ def test_reviewer_approve_with_token_enforces_contract(tmp_path, monkeypatch):
     assert r.status_code == 400           # contract violation, not 200
     detail = c.get(f"/api/review/{qid}").json()
     assert detail["approval_blockers"]     # workbench shows what is missing
+    r = c.post(f"/api/review/{qid}", json={"status": "approved"},
+               headers={"X-Reviewer-Token": "secret"})
+    assert r.status_code == 400           # contract violation, not 200
+    detail = c.get(f"/api/review/{qid}").json()
+    assert detail["approval_blockers"]     # workbench shows what is missing
+
+
+def test_review_workbench_page_served(tmp_path, monkeypatch):
+    """The reviewer UI reuses the app's routing/design system and is gated by
+    the same server-side token flow (it calls the protected endpoints)."""
+    c = _api_client(tmp_path, monkeypatch)
+    r = c.get("/review")
+    assert r.status_code == 200
+    assert "review-queue" in r.text and "Reviewer token" in r.text

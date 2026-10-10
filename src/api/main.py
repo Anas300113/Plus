@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
-from src.api.dashboard_pages import HOME, LEARN, MOCKS, PARENT, PROGRESS
+from src.api.dashboard_pages import HOME, LEARN, MOCKS, PARENT, PROGRESS, REVIEW
 from src.api.practice_page import PRACTICE_HTML
 
 from src.core.database import (
@@ -113,6 +113,11 @@ def parent_page():
 @app.get("/practice", response_class=HTMLResponse)
 def practice_page():
     return PRACTICE_HTML
+
+
+@app.get("/review", response_class=HTMLResponse)
+def review_page():
+    return REVIEW
 
 
 @app.get("/api/questions")
