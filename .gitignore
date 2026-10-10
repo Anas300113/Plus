@@ -9,3 +9,6 @@ data/sources/
 venv/
 node_modules/
 dist/
+
+data/knowledge/
+*.joblib

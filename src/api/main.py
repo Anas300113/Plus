@@ -454,3 +454,46 @@ def assemble_exam(exam_id: str, payload: AssembleIn, db: Session = Depends(get_d
     if payload.mode == "authentic":
         return assemble_authentic(db, exam_id, payload.document_id)
     return assemble_generated(db, exam_id, payload.sections, seed=payload.seed)
+
+
+# ---------------- Knowledge / retrieval (read-only) ----------------
+# Thin wrapper over the frozen ingestion foundation. Retrieval only ever
+# *returns evidence* (filename + page + excerpt) for the given query; it never
+# creates, promotes or approves questions/answers. If an index file is not
+# configured or present, this returns HTTP 503 with a clear message so callers
+# do not mistake "no index built yet" for "no evidence exists".
+
+_KNOWLEDGE_INDEX_PATH = os.environ.get(
+    "PLUS_KNOWLEDGE_INDEX", "data/knowledge/index.joblib"
+)
+
+
+class KnowledgeQuery(BaseModel):
+    q: str
+    k: int = 5
+
+
+@app.post("/api/knowledge/search")
+def knowledge_search(payload: KnowledgeQuery):
+    from pathlib import Path
+
+    from fastapi import HTTPException
+
+    from src.knowledge.retriever import KnowledgeIndex
+    path = Path(_KNOWLEDGE_INDEX_PATH)
+    if not path.exists():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "knowledge index not built; run "
+                "'python scripts/knowledge_cli.py index' first"
+            ),
+        )
+    idx = KnowledgeIndex.load(path)
+    hits = idx.search(payload.q, top_k=payload.k)
+    return {
+        "query": payload.q,
+        "evidence": hits,
+        "insufficient_evidence": len(hits) == 0,
+    }
+
