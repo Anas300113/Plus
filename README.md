@@ -99,7 +99,29 @@ evidence-based learning mechanics — no AI required on the critical path.
 - `GET /api/progress/{student_id}` — existing progress endpoint extended
 - `GET /api/parent/{student_id}` — parent dashboard
 
-Only `approved` questions are student-facing.
+Only `approved` questions are student-facing. `GET /api/questions` never
+returns `correct_answer` (marking is server-side).
+
+### Question Bank v1 — reviewer endpoints (trustworthy-question contract)
+- `GET /api/review-queue` — pending candidates
+- `GET /api/review/{question_id}` — full detail: options in order, provenance
+  (document + page), answer/explanation verification states, extraction
+  warnings, review history and the exact unmet `approval_blockers`
+- `POST /api/review/{question_id}` — approve/reject (`{"status","reviewer",
+  "reason"}`); approval is rejected with **400** until every contract
+  requirement is met
+- `POST /api/review/{question_id}/verify-answer` — `{"reviewer","evidence"}`
+- `POST /api/review/{question_id}/verify-explanation` — `{"reviewer","evidence"}`
+- `POST /api/review/{question_id}/edit` — edit text/answer/explanation/options;
+  editing a verified field resets it to `candidate`
+- `GET /review` — reviewer workbench UI (reuses the app design system)
+
+Reviewer **mutations** are gated server-side by a shared token: set
+`PLUS_REVIEWER_TOKEN` and send it in the `X-Reviewer-Token` header. When the
+token is not configured, reviewer mutations are locked (503) rather than open.
+Approval requires: usable text, document+page provenance, valid ordered MCQ
+options whose label maps to the answer, a **verified** answer and a
+**verified** explanation. Every decision/edit is appended to an audit trail.
 
 ## Quickstart
 
@@ -161,7 +183,7 @@ $env:PYTHONPATH='.'
 python -m pytest tests/
 ```
 
-**183 tests, all passing.**
+**203 tests, all passing.**
 
 Phase 6 (learning layer) — `test_learning_session.py` (18),
 `test_review_items.py` (11), `test_statistics.py` (12),
@@ -173,6 +195,13 @@ page-level citations, insufficient-evidence behaviour, index/DB repair,
 atomic replace) and `test_content_readiness.py` (CLI `ingest` bridge,
 off-PATH OCR engine config, reproducible read-only report, provenance /
 ordered-option checks).
+
+Question Bank v1 — `test_question_bank_v1.py` (20): trustworthy-question
+contract (approval blocked without verified answer+explanation+provenance;
+MCQ answer must map to a real option), review audit trail, edit-invalidates-
+verification, student practice (pending excluded, out-of-options answer
+rejected, marking against the verified answer, one attempt per submission)
+and the API boundary (no `correct_answer` leak, reviewer token enforced).
 
 Ingestion — `test_mcq_option_extraction.py`, `test_answer_linking.py`,
 `test_ocr.py`, `test_ingestion_idempotency.py`, `test_provenance.py`,
