@@ -133,6 +133,16 @@ class CanonicalQuestion(Base):
     explanation: Mapped[str] = mapped_column(Text, default="")
     worked_solution: Mapped[str] = mapped_column(Text, default="")
     hint: Mapped[str] = mapped_column(Text, default="")
+    # Trustworthy-question contract: explicit verification states.
+    #   answer_status:      missing | candidate | verified | conflicting
+    #   explanation_status: missing | candidate | verified
+    # A populated correct_answer/explanation alone is NEVER proof of approval.
+    answer_status: Mapped[str] = mapped_column(
+        String, default="missing", server_default="missing", index=True)
+    explanation_status: Mapped[str] = mapped_column(
+        String, default="missing", server_default="missing")
+    answer_evidence: Mapped[str] = mapped_column(Text, default="")
+    extraction_warnings_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
     language: Mapped[str] = mapped_column(String, default="en")
     exam_board: Mapped[str] = mapped_column(String, default="")
     region: Mapped[str] = mapped_column(String, default="")
@@ -149,7 +159,35 @@ class QuestionReviewStatus(Base):
         String, nullable=False, default="discovered", index=True)
     source: Mapped[str] = mapped_column(String, nullable=False, default="ingestion")
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    # Audit: who last decided, when, and why (human review trail).
+    # server_default required so the additive ALTER satisfies SQLite NOT NULL
+    # on existing rows (see src/core/migrations.py).
+    reviewer: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default="")
+    decision: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default="")
+    reason: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class QuestionReviewEvent(Base):
+    """Append-only audit log of review decisions and edits.
+
+    Never overwritten: each approval / rejection / edit records the acting
+    reviewer, a UTC timestamp, the decision, and a reason. This is the
+    authoritative review history required by the trustworthy-question contract.
+    """
+    __tablename__ = "question_review_events"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    question_id: Mapped[str] = mapped_column(
+        String, ForeignKey("canonical_questions.id"), index=True)
+    action: Mapped[str] = mapped_column(
+        String, nullable=False, index=True)  # edit | approve | reject | verify_answer | verify_explanation
+    reviewer: Mapped[str] = mapped_column(String, nullable=False, default="")
+    from_status: Mapped[str] = mapped_column(String, default="")
+    to_status: Mapped[str] = mapped_column(String, default="")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class AssessmentExamBoard(Base):
