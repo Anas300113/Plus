@@ -141,7 +141,8 @@ class CanonicalQuestion(Base):
         String, default="missing", server_default="missing", index=True)
     explanation_status: Mapped[str] = mapped_column(
         String, default="missing", server_default="missing")
-    answer_evidence: Mapped[str] = mapped_column(Text, default="")
+    answer_evidence: Mapped[str] = mapped_column(
+        Text, default="", server_default="")
     extraction_warnings_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
     language: Mapped[str] = mapped_column(String, default="en")
     exam_board: Mapped[str] = mapped_column(String, default="")
@@ -166,7 +167,7 @@ class QuestionReviewStatus(Base):
         String, nullable=False, default="", server_default="")
     decision: Mapped[str] = mapped_column(
         String, nullable=False, default="", server_default="")
-    reason: Mapped[str] = mapped_column(Text, default="")
+    reason: Mapped[str] = mapped_column(Text, default="", server_default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
