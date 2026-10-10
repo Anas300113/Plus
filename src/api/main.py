@@ -11,7 +11,7 @@ import os
 import uuid
 from datetime import datetime
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
@@ -36,6 +36,35 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+# Reviewer authorisation boundary.
+# -------------------------------
+# The application has no user/identity model yet (student routes take a bare
+# ``student_id``). Reviewer operations change persisted state and can publish
+# a question to students, so they MUST be gated server-side, not just hidden in
+# the UI. The smallest correct boundary is a shared reviewer token supplied in
+# the ``X-Reviewer-Token`` header and compared (constant-time) against the
+# ``PLUS_REVIEWER_TOKEN`` environment variable.
+#
+# Fail-closed: when the token is not configured, reviewer MUTATIONS are locked
+# (503) rather than left open. Read-only reviewer endpoints stay available so
+# the workbench can render. This is a thin boundary pending a real auth system;
+# it is never the sole protection for student data (answers are never sent to
+# students regardless of this guard).
+REVIEWER_TOKEN_ENV = "PLUS_REVIEWER_TOKEN"
+
+
+def require_reviewer(x_reviewer_token: str | None = Header(default=None)):
+    import hmac
+    import os as _os
+    expected = _os.environ.get(REVIEWER_TOKEN_ENV, "")
+    if not expected:
+        raise HTTPException(
+            503, "reviewer operations are locked: set PLUS_REVIEWER_TOKEN")
+    if not x_reviewer_token or not hmac.compare_digest(
+            x_reviewer_token, expected):
+        raise HTTPException(403, "invalid or missing reviewer token")
 
 
 app = FastAPI(title="11+ Platform API", version="0.1.0")
@@ -98,10 +127,13 @@ def list_questions(subject: str | None = None, topic: str | None = None,
     if topic:
         q = q.filter(CanonicalQuestion.topic == topic)
     rows = q.limit(limit).all()
+    # Student-facing: NEVER expose correct_answer here. Marking happens
+    # server-side via the session answer route, which reads the verified
+    # answer from the stored record. Exposing it here would let a client
+    # trivially cheat.
     return [{"id": r.id, "subject": r.subject, "topic": r.topic,
              "question_type": r.question_type, "question_text": r.question_text,
-             "options": r.options_json, "context": r.context,
-             "correct_answer": r.correct_answer} for r in rows]
+             "options": r.options_json, "context": r.context} for r in rows]
 
 
 @app.post("/api/sessions")
@@ -293,18 +325,121 @@ def review_queue(limit: int = 50, db: Session = Depends(get_db)):
 class ReviewIn(BaseModel):
     status: str  # approved | rejected
     reviewer: str = "api"
+    reason: str = ""
 
 
 @app.post("/api/review/{question_id}")
-def review(question_id: str, payload: ReviewIn, db: Session = Depends(get_db)):
+def review(question_id: str, payload: ReviewIn, db: Session = Depends(get_db),
+           _reviewer: None = Depends(require_reviewer)):
     if payload.status not in ("approved", "rejected"):
         raise HTTPException(400, "status must be approved|rejected")
-    from src.pipeline.review import set_status
+    from src.pipeline.review import ApprovalContractError, set_status
     try:
-        set_status(db, question_id, payload.status, payload.reviewer)
+        set_status(db, question_id, payload.status, payload.reviewer,
+                   payload.reason)
+    except ApprovalContractError as exc:
+        # The question exists but does not meet the trustworthy contract.
+        raise HTTPException(400, str(exc))
     except ValueError as exc:
         raise HTTPException(404, str(exc))
     return {"ok": True, "status": payload.status}
+
+
+@app.get("/api/review/{question_id}")
+def review_detail(question_id: str, db: Session = Depends(get_db)):
+    """Reviewer workbench: the stored question, its provenance, verification
+    states, extraction warnings and the precise unmet approval requirements."""
+    from src.pipeline.review import approval_blockers, has_provenance
+    from src.core.database import QuestionOccurrence, QuestionReviewEvent
+    q = db.query(CanonicalQuestion).filter_by(id=question_id).first()
+    if q is None:
+        raise HTTPException(404, "question not found")
+    status = db.query(QuestionReviewStatus).filter_by(
+        question_id=question_id).first()
+    occs = db.query(QuestionOccurrence).filter_by(
+        canonical_question_id=question_id).all()
+    provenance = [{
+        "document_id": o.document_id, "page_id": o.page_id,
+        "question_number": o.question_number,
+        "linked_answer": o.linked_answer,
+        "extraction_confidence": o.extraction_confidence,
+    } for o in occs]
+    events = db.query(QuestionReviewEvent).filter_by(
+        question_id=question_id).order_by(QuestionReviewEvent.created_at).all()
+    return {
+        "id": q.id, "subject": q.subject, "topic": q.topic,
+        "question_type": q.question_type, "question_text": q.question_text,
+        "options": q.options_json, "context": q.context,
+        "correct_answer": q.correct_answer,
+        "answer_status": q.answer_status,
+        "explanation_status": q.explanation_status,
+        "answer_evidence": q.answer_evidence,
+        "explanation": q.explanation,
+        "extraction_warnings": q.extraction_warnings_json or [],
+        "review_status": (status.status if status else None),
+        "reviewer": (status.reviewer if status else ""),
+        "has_provenance": has_provenance(db, question_id),
+        "provenance": provenance,
+        "approval_blockers": approval_blockers(db, question_id),
+        "review_history": [{
+            "action": e.action, "reviewer": e.reviewer,
+            "from_status": e.from_status, "to_status": e.to_status,
+            "reason": e.reason, "created_at": e.created_at.isoformat(),
+        } for e in events],
+    }
+
+
+class VerifyIn(BaseModel):
+    reviewer: str = "api"
+    evidence: str = ""
+
+
+@app.post("/api/review/{question_id}/verify-answer")
+def verify_answer_endpoint(question_id: str, payload: VerifyIn,
+                           db: Session = Depends(get_db),
+                           _reviewer: None = Depends(require_reviewer)):
+    from src.pipeline.review import verify_answer
+    try:
+        verify_answer(db, question_id, payload.reviewer, payload.evidence)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"ok": True, "answer_status": "verified"}
+
+
+@app.post("/api/review/{question_id}/verify-explanation")
+def verify_explanation_endpoint(question_id: str, payload: VerifyIn,
+                                db: Session = Depends(get_db),
+                                _reviewer: None = Depends(require_reviewer)):
+    from src.pipeline.review import verify_explanation
+    try:
+        verify_explanation(db, question_id, payload.reviewer, payload.evidence)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"ok": True, "explanation_status": "verified"}
+
+
+class EditIn(BaseModel):
+    reviewer: str = "api"
+    question_text: str | None = None
+    correct_answer: str | None = None
+    explanation: str | None = None
+    options_json: list | None = None
+
+
+@app.post("/api/review/{question_id}/edit")
+def edit_endpoint(question_id: str, payload: EditIn,
+                  db: Session = Depends(get_db),
+                  _reviewer: None = Depends(require_reviewer)):
+    from src.pipeline.review import edit_question
+    try:
+        edit_question(db, question_id, payload.reviewer,
+                      question_text=payload.question_text,
+                      correct_answer=payload.correct_answer,
+                      explanation=payload.explanation,
+                      options_json=payload.options_json)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+    return {"ok": True}
 
 
 

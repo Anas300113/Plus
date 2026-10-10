@@ -320,6 +320,22 @@ def submit_answer(db: Session, session_id: str, question_id: str,
         raise ValueError("question is not approved for practice")
 
     question = question_map(db, [question_id])[question_id]
+    # A submitted option must belong to the actual question. For MCQs that
+    # carry an option set, reject an out-of-set choice server-side (a client
+    # must not be able to submit an arbitrary value and have it marked).
+    if action == "answer" and chosen_answer:
+        from src.pipeline.review import option_labels, _looks_mcq
+        if _looks_mcq(question):
+            allowed = {l.upper() for l in option_labels(question)}
+            # Also accept a chosen option's literal text (some clients post
+            # the text, not the letter) by matching against option text.
+            texts = {str((o or {}).get("text", "")).strip().upper()
+                     for o in (question.options_json or []) if isinstance(o, dict)}
+            if allowed and chosen_answer.strip().upper() not in allowed \
+                    and chosen_answer.strip().upper() not in texts:
+                raise ValueError(
+                    f"answer '{chosen_answer}' is not one of the question's "
+                    f"options")
     is_correct = (_normalise(chosen_answer)
                   == _normalise(question.correct_answer))
     if action == "skip":

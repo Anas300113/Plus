@@ -35,6 +35,13 @@ CANDIDATE = "candidate"
 MISSING = "missing"
 
 
+class ApprovalContractError(ValueError):
+    """Raised when a requested approval violates the trustworthy-question
+    contract (unmet requirements). Distinct from a missing-row ValueError so
+    callers can map it to a 400 rather than a 404."""
+    pass
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -86,7 +93,10 @@ def option_labels(question: CanonicalQuestion) -> list[str]:
     labels = []
     for opt in opts:
         if isinstance(opt, dict):
-            labels.append(str(opt.get("label", "")).strip())
+            # Extraction stores the label under "letter"; accept "label"/"key"
+            # too so adapters with other keys still resolve.
+            labels.append(str(opt.get("letter") or opt.get("label")
+                               or opt.get("key") or "").strip())
         else:
             labels.append(str(opt).strip())
     return [l for l in labels if l]
@@ -136,7 +146,7 @@ def set_status(session: Session, question_id: str, status: str,
     if status == APPROVED:
         blockers = approval_blockers(session, question_id)
         if blockers:
-            raise ValueError(
+            raise ApprovalContractError(
                 "cannot approve; unmet requirements: " + "; ".join(blockers))
     from_status = row.status
     row.status = status
