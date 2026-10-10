@@ -113,6 +113,47 @@ $env:PLUS_DATABASE_URL='sqlite:///./elevenplus.db'
 python -m uvicorn src.api.main:app --port 8000
 ```
 
+## Knowledge engine & ingestion CLI (`scripts/knowledge_cli.py`)
+
+Local, offline retrieval over the frozen ingestion foundation — no network,
+no model downloads (TF-IDF + cosine similarity via `scikit-learn`, persisted
+with `joblib`). Retrieval returns verifiable `filename` + `page` + excerpt
+and never fabricates evidence.
+
+```powershell
+$env:PYTHONPATH='.'
+
+# Discover + ingest a directory into the DB (idempotent, resumable). This is
+# the CLI path that actually populates the DB; `index` only reads existing rows.
+python scripts/knowledge_cli.py --db elevenplus.db ingest `
+  --source "D:/11+ dump" --repo corpus --batch b1 --assets data/assets
+
+# Build / rebuild the TF-IDF index from DB content (atomic replace).
+python scripts/knowledge_cli.py --db elevenplus.db index --out data/knowledge/index.joblib
+
+# Retrieve relevant passages with page-level citations.
+python scripts/knowledge_cli.py --db elevenplus.db query `
+  --index data/knowledge/index.joblib --q "opposite of generous" -k 3
+
+# Verify index/DB consistency and rebuild if drifted.
+python scripts/knowledge_cli.py --db elevenplus.db repair --index data/knowledge/index.joblib
+
+# Reproducible, read-only content-readiness metrics from stored records.
+python scripts/knowledge_cli.py --db elevenplus.db report
+```
+
+### OCR on scanned PDFs (Windows)
+Tesseract may be installed but **not on PATH**. Point the pipeline at the
+binary explicitly; otherwise scanned pages are skipped by design (distinct
+from an extraction failure):
+
+```powershell
+$env:PLUS_TESSERACT_CMD = "C:\Program Files\Tesseract-OCR\tesseract.exe"
+```
+
+Generated artefacts are excluded from Git: `data/assets/`, `data/knowledge/`,
+`*.joblib`.
+
 ## Tests
 
 ```powershell
@@ -120,14 +161,23 @@ $env:PYTHONPATH='.'
 python -m pytest tests/
 ```
 
-119 tests, all passing. New in Phase 6:
-- `test_learning_session.py` (18) — session state machine
-- `test_review_items.py` (11) — ReviewItem scheduling
-- `test_statistics.py` (12) — statistics and mastery
-- `test_educational_loop.py` (11) — loop assembly
-- `test_migrations.py` (8) — migration framework
-- Extended `test_api.py` — session, review, statistics, recommendations,
-  loop endpoints
+**183 tests, all passing.**
+
+Phase 6 (learning layer) — `test_learning_session.py` (18),
+`test_review_items.py` (11), `test_statistics.py` (12),
+`test_educational_loop.py` (11), `test_migrations.py` (8), plus extended
+`test_api.py`.
+
+Knowledge engine — `test_knowledge_engine.py` (chunking, TF-IDF retrieval,
+page-level citations, insufficient-evidence behaviour, index/DB repair,
+atomic replace) and `test_content_readiness.py` (CLI `ingest` bridge,
+off-PATH OCR engine config, reproducible read-only report, provenance /
+ordered-option checks).
+
+Ingestion — `test_mcq_option_extraction.py`, `test_answer_linking.py`,
+`test_ocr.py`, `test_ingestion_idempotency.py`, `test_provenance.py`,
+`test_duplicate_detection.py`, and others.
+
 
 ## Reference repos
 
