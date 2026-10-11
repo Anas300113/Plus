@@ -755,3 +755,49 @@ def knowledge_search(payload: KnowledgeQuery):
         "insufficient_evidence": len(hits) == 0,
     }
 
+
+def _load_knowledge_index():
+    """Load the on-disk knowledge index, or return ``None`` if none is built.
+
+    Shared by the retrieval-only search endpoint and the source-grounded
+    explain endpoint. ``None`` means "no index built yet" -- the explain path
+    degrades to a no-evidence grounding note and never fabricates a citation.
+    """
+    from pathlib import Path
+
+    from src.knowledge.retriever import KnowledgeIndex
+    path = Path(_KNOWLEDGE_INDEX_PATH)
+    if not path.exists():
+        return None
+    try:
+        return KnowledgeIndex.load(path)
+    except Exception:
+        return None
+
+
+@app.get("/api/explain/{question_id}")
+def explain_question_endpoint(question_id: str, db: Session = Depends(get_db)):
+    """EXPLAIN step: source-grounded explanation for an APPROVED question.
+
+    Cohesive integration point between the trustworthy knowledge engine and the
+    learning loop. It augments the deterministic stored explanation with
+    verifiable source evidence (filename/page/excerpt/score) when a knowledge
+    index is built. Keyed by ``question_id`` ONLY -- never by ``student_id`` --
+    so it cannot inherit the student-ownership gap. The answer key stays
+    protected: only APPROVED questions are explainable, mirroring the practice
+    path, and evidence is always attributed and never presented as a quotation.
+    """
+    from src.learning.queries import explain_question
+    q = db.query(CanonicalQuestion).filter_by(id=question_id).first()
+    if q is None:
+        raise HTTPException(404, "question not found")
+    status = db.query(QuestionReviewStatus).filter_by(
+        question_id=q.id).first()
+    if status is None or status.status != "approved":
+        # Never expose an answer/explanation for content that has not passed
+        # the trustworthy-question contract (integrity rule: protect answer
+        # keys; authoritative vs generated separation).
+        raise HTTPException(403, "question is not approved for study")
+    index = _load_knowledge_index()
+    return explain_question(db, q, knowledge_index=index)
+

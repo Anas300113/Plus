@@ -93,14 +93,65 @@ def common_mistakes(db: Session, topic_id: str) -> list[dict]:
             .filter_by(topic_id=topic_id).all()]
 
 
+def _ground_in_sources(question: CanonicalQuestion,
+                       knowledge_index, top_k: int = 3) -> tuple[list[dict], str]:
+    """Ground the explanation in ingested source material via the knowledge
+    engine, WITHOUT ever fabricating a citation.
+
+    Keyed by the question text (never by ``student_id``), so it cannot inherit
+    the student-ownership gap. Each hit carries verifiable provenance
+    (filename, page, excerpt, score). When the index finds no lexical evidence
+    it returns ``([], ...)`` and an explicit grounding note -- it never invents
+    a source and never labels a retrieved chunk as a verbatim quotation.
+    """
+    if knowledge_index is None:
+        return [], "no knowledge index available for this explanation"
+    query = (question.question_text or "").strip() or question.topic
+    hits = []
+    try:
+        hits = knowledge_index.search(query, top_k=top_k, min_score=0.05)
+    except Exception:
+        # A retrieval failure must never break explanation; degrade to
+        # "no evidence" rather than raising on the learning path.
+        return [], "source grounding unavailable (retrieval error)"
+    evidence = [
+        {
+            "filename": h["filename"],
+            "page_number": h["page_number"],
+            "excerpt": h["excerpt"],
+            "score": h["score"],
+            # provenance ids let a reviewer open the exact source page
+            "document_id": h.get("document_id"),
+            "page_id": h.get("page_id"),
+        }
+        for h in hits
+    ]
+    if evidence:
+        note = ("source-grounded: excerpts are retrieved from ingested "
+                "material and are not verbatim quotations of the answer")
+    else:
+        note = "no source-backed evidence found for this question"
+    return evidence, note
+
+
 def explain_question(db: Session, question: CanonicalQuestion,
                      chosen_answer: str | None = None,
-                     is_correct: bool | None = None) -> dict:
+                     is_correct: bool | None = None,
+                     knowledge_index=None) -> dict:
     """Explain step: deterministic feedback from stored content only.
 
     This reports what is stored (correct answer, explanation, worked solution,
     topic common mistakes). It does NOT claim to diagnose a misconception;
     misconception identification is an AI-tutor concern and is deferred.
+
+    ``knowledge_index`` (optional) is the cohesive integration point between
+    the trustworthy knowledge engine and the learning loop's EXPLAIN step:
+    when provided, the explanation is augmented with verifiable source
+    evidence (filename/page/excerpt/score). It is keyed by the question text
+    and topic only -- never by ``student_id`` -- so it cannot inherit the
+    student-ownership gap. Evidence is always attributed and never fabricated:
+    with no index or no lexical overlap, ``source_evidence`` is ``[]`` and the
+    ``grounding`` note records that nothing was found.
     """
     mistakes = common_mistakes(db, question.topic)
     if is_correct is None and chosen_answer is not None:
@@ -118,6 +169,7 @@ def explain_question(db: Session, question: CanonicalQuestion,
             f"The correct answer is '{question.correct_answer}'. Compare each "
             "step against the worked solution before trying a similar "
             "question.")
+    source_evidence, grounding = _ground_in_sources(question, knowledge_index)
     return {
         "question_id": question.id,
         "subject": question.subject,
@@ -130,4 +182,8 @@ def explain_question(db: Session, question: CanonicalQuestion,
         "worked_solution": question.worked_solution,
         "common_mistakes": mistakes,
         "review_prompt": review_prompt,
+        # source-grounded evidence (may be empty); always attributed, never
+        # presented as a quotation, never fabricated.
+        "source_evidence": source_evidence,
+        "grounding": grounding,
     }
