@@ -19,6 +19,22 @@ import numpy as np
 from .chunk import Chunk
 
 
+def _is_answer_key_chunk(filename: str, text: str) -> bool:
+    """True when a chunk carries explicit answer-key evidence.
+
+    Defense-in-depth filter for retrieval: reuses the SAME authoritative
+    classifier as the ingestion pipeline (via src.pipeline.link) so the
+    knowledge engine can never disagree with answer-linking about what a key
+    is. Imported lazily to keep the retrieval layer import-clean and to avoid
+    a knowledge -> pipeline import cycle at module load.
+    """
+    from src.pipeline.link import (
+        filename_is_answer_key, text_is_answer_key_heading,
+    )
+    return (filename_is_answer_key(filename)
+            or text_is_answer_key_heading(text))
+
+
 class KnowledgeIndex:
     """Persistable TF-IDF index over a set of chunks."""
 
@@ -138,6 +154,13 @@ class KnowledgeIndex:
             if score <= 0.0:
                 continue  # no lexical evidence
             c = self._chunks[int(i)]
+            # Answer-key protection (P0, defense-in-depth): the primary guard
+            # excludes keys at build time, but a previously-built index on disk
+            # may still contain answer-key chunks until it is rebuilt. Filter
+            # here too, reusing the SAME authoritative classifier the pipeline
+            # uses, so no path can surface key content.
+            if _is_answer_key_chunk(c.filename, c.text):
+                continue
             results.append({
                 "score": round(score, 6),
                 "chunk_id": c.chunk_id,

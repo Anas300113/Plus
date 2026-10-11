@@ -23,6 +23,22 @@ from src.knowledge.chunk import chunk_text
 from src.knowledge.retriever import KnowledgeIndex
 
 
+def _is_answer_key_page(filename: str, text: str) -> bool:
+    """True when a page carries explicit answer-key evidence.
+
+    Single source of truth is :mod:`src.pipeline.link` -- the same classifier the
+    ingestion pipeline uses to decide which documents are answer keys. We reuse
+    it verbatim (filename marker OR an answer/marking-scheme page heading) so
+    the knowledge engine and the answer-linking step can never disagree about
+    what a key is. Imported lazily to keep the knowledge layer import-clean.
+    """
+    from src.pipeline.link import (
+        filename_is_answer_key, text_is_answer_key_heading,
+    )
+    return (filename_is_answer_key(filename)
+            or text_is_answer_key_heading(text))
+
+
 def iter_page_chunks(
     session: Session,
     *,
@@ -63,6 +79,16 @@ def iter_page_chunks(
                 continue  # never fabricate content for empty pages
             # human-facing filename (basename); keep full path in meta
             fname = filename.replace("\\", "/").rsplit("/", 1)[-1] or filename
+            # Answer-key protection (P0): never make answer-key content
+            # retrievable. A page is excluded when its document is named as a
+            # key (filename markers) OR the page itself opens with an explicit
+            # answer/marking-scheme heading -- the same evidence the ingestion
+            # pipeline trusts. Excluding at build time keeps protected content
+            # out of the persisted index entirely, so it cannot leak via the
+            # search endpoint, the explain grounding path, or a raw index file.
+            if _is_answer_key_page(fname, text):
+                last_id = page.id
+                continue
             yield from chunk_text(
                 text,
                 filename=fname,

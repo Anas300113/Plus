@@ -63,6 +63,26 @@ def is_answer_sheet(doc: SourceDocument, pages: list[SourcePage]) -> bool:
                for p in pages)
 
 
+def filename_is_answer_key(filename: str) -> bool:
+    """True when a filename alone marks a document as an answer key.
+
+    Single source of truth for the filename half of :func:`is_answer_sheet`,
+    reused by the knowledge engine so answer-key content is never made
+    retrievable. Matches whole word tokens only, so a student worksheet named
+    ``answers-review-activity.pdf`` is still caught but ``transkey.pdf`` (which
+    merely contains the substring "key") is not.
+    """
+    return bool(_stem_tokens(filename) & KEY_STEM_TOKENS)
+
+
+def text_is_answer_key_heading(text: str) -> bool:
+    """True when page text opens with an explicit answer-key/marking heading.
+
+    Reuses the exact same heading matcher as :func:`is_answer_sheet`.
+    """
+    return _has_key_heading(text or "")
+
+
 def parse_answers(text: str) -> dict[str, str]:
     return {m.group(1): m.group(2).strip() for m in ANSWER_LINE.finditer("\n" + text)}
 
