@@ -67,8 +67,11 @@ def _strict(monkeypatch):
     "/api/parent/s1",
 ])
 def test_cross_student_read_is_blocked(env, monkeypatch, path):
-    """A caller cannot read student s1's data by supplying s1 in the URL:
-    under strict identity an attacker's X-Student-Id must be rejected."""
+    """Under strict identity a *mismatched* header and a *missing* header are
+    rejected. NOTE: this does NOT prove ownership -- a caller who echoes the
+    victim's own id still passes (see
+    ``test_supplying_victim_identifier_alone_is_NOT_prevented``). This test only
+    pins the guard's reject-mismatch / require-present behaviour."""
     c, _ = env
     _strict(monkeypatch)
     r = c.get(path, headers={"X-Student-Id": "attacker"})
@@ -132,4 +135,50 @@ def test_attempts_endpoint_requires_matching_identity(env, monkeypatch):
                json={"student_id": "s1", "session_id": sid,
                      "question_id": qid, "chosen_answer": "B"})
     assert r.status_code == 200 and r.json()["is_correct"] is True
+
+
+# ---- DOCUMENTED, UNRESOLVED security limitation (P0-5) -------------------
+# The ``PLUS_REQUIRE_STUDENT_IDENTITY`` guard compares a caller-supplied
+# ``X-Student-Id`` header against a caller-supplied ``student_id`` (URL path or
+# body). A caller-supplied identifier is NOT proof of identity: an attacker who
+# knows (or guesses) the victim's student id sets the header to that same id and
+# the request is accepted. These tests assert the CURRENT behaviour explicitly
+# so the gap is visible and cannot be mistaken for verified ownership.
+#
+# This is NOT a passing security guarantee. The platform has no login/session/
+# token identity for students, so there is no server-trusted principal from
+# which to derive ownership. RESOLUTION (out of scope to invent here): add a
+# real authentication mechanism (e.g. signed session cookie or bearer token
+# issued at login), derive the student id from that server-verified principal,
+# and ignore any caller-supplied student id. Until then, student-specific and
+# parent data MUST be treated as world-readable to anyone who knows an id, and
+# the platform must NOT be represented as production-secure.
+def test_supplying_victim_identifier_alone_is_NOT_prevented(env, monkeypatch):
+    """KNOWN GAP (not a security guarantee): even with strict identity ON, a
+    caller who supplies the victim's own student id in BOTH the header and the
+    URL is served that student's data. The guard only rejects a *mismatched*
+    header, which an attacker trivially satisfies by echoing the victim's id.
+    """
+    c, _ = env
+    _strict(monkeypatch)
+    for path in ("/api/progress/s1", "/api/parent/s1", "/api/reviews/s1"):
+        r = c.get(path, headers={"X-Student-Id": "s1"})
+        assert r.status_code == 200, (
+            f"{path}: expected the documented gap (attacker echoing victim id "
+            f"is accepted); got {r.status_code}. If this now returns 403, the "
+            f"ownership boundary has been genuinely implemented -- update this "
+            f"test to assert protection and remove this notice.")
+
+
+def test_parent_access_by_arbitrary_student_id_is_NOT_prevented(env, monkeypatch):
+    """KNOWN GAP: the parent dashboard endpoint takes a bare student id with no
+    parent-identity binding, so any caller who knows a student id can read that
+    student's parent-facing summary. Documented, unresolved, same root cause as
+    the student-ownership gap (no server-trusted identity)."""
+    c, _ = env
+    _strict(monkeypatch)
+    # A 'parent' who only knows the student's id -- no parent credential exists.
+    r = c.get("/api/parent/s1", headers={"X-Student-Id": "s1"})
+    assert r.status_code == 200, "documented gap: parent data readable by id"
+
 

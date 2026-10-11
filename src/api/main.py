@@ -97,11 +97,20 @@ def require_reviewer(x_reviewer_token: str | None = Header(default=None)) -> str
 #                                   the URL);
 #   * ``POST /api/attempts``     -> must equal ``payload.student_id``.
 # When disabled (the default), behaviour is exactly as before so the stateless
-# demo UI and existing clients keep working. It is a thin, shared-credential
-# boundary pending a real identity provider -- exactly like the reviewer token
-# -- and does NOT establish an authenticated individual identity. Production
-# readiness requires a real auth system; enabling this flag is necessary but
-# not sufficient.
+# demo UI and existing clients keep working.
+#
+# *** THIS IS NOT AUTHENTICATION AND DOES NOT ESTABLISH OWNERSHIP. ***
+# ``X-Student-Id`` is caller-supplied. An attacker who knows (or guesses) a
+# victim's student id simply echoes that id in the header and the URL, and is
+# served the victim's data: there is no server-trusted principal to prove the
+# caller IS that student. This guard only (a) requires the header to be present
+# and (b) rejects an obviously mismatched header -- defence against accidental
+# id typos and a placeholder for a future real identity layer, NOT a security
+# boundary. Student-specific and parent data remain readable by anyone who
+# knows an id. The platform is NOT production-secure until a real
+# authentication mechanism issues a server-verified identity that ownership is
+# derived from (see tests/test_student_identity.py: the
+# ``..._is_NOT_prevented`` tests document this gap deliberately).
 STUDENT_IDENTITY_ENV = "PLUS_REQUIRE_STUDENT_IDENTITY"
 
 
