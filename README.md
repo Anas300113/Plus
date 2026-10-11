@@ -116,12 +116,17 @@ returns `correct_answer` (marking is server-side).
   editing a verified field resets it to `candidate`
 - `GET /review` — reviewer workbench UI (reuses the app design system)
 
-Reviewer **mutations** are gated server-side by a shared token: set
+Reviewer operations (including **reads** of the review queue, question detail,
+verification and edit) are gated server-side by a shared token: set
 `PLUS_REVIEWER_TOKEN` and send it in the `X-Reviewer-Token` header. When the
-token is not configured, reviewer mutations are locked (503) rather than open.
-Approval requires: usable text, document+page provenance, valid ordered MCQ
-options whose label maps to the answer, a **verified** answer and a
-**verified** explanation. Every decision/edit is appended to an audit trail.
+token is not configured, reviewer operations are locked (read: 503, mutate:
+503) rather than open, so answer keys and review history are never exposed to
+unauthorised callers. The token identifies the *shared reviewer credential*
+(recorded as a token hash), not an individual human — there is no user/identity
+provider yet. Approval requires: usable text, document+page provenance, valid
+ordered MCQ options whose label maps to the answer, a **verified** answer and a
+**verified** explanation (each with recorded, inspectable evidence). Every
+decision/edit is appended to an audit trail in the same commit as the change.
 
 ## Quickstart
 
@@ -183,7 +188,22 @@ $env:PYTHONPATH='.'
 python -m pytest tests/
 ```
 
-**203 tests, all passing.**
+**222 tests, all passing.**
+
+### Student data ownership (P1-13)
+
+Student routes historically took a bare `student_id` (path/body) with no
+ownership check, so any caller who knew a student id could read or act on that
+student's sessions, attempts, progress and parent dashboard. Set
+`PLUS_REQUIRE_STUDENT_IDENTITY=1` to enable an opt-in ownership boundary: a
+caller must then send an `X-Student-Id` header that equals the owning student
+(for session-scoped routes the owner is read from the stored session, never
+trusted from the URL); a mismatch is `403` and a missing header is `401`. When
+the flag is unset (the default) behaviour is unchanged so the stateless demo UI
+keeps working. Like the reviewer token, this is a thin shared-credential
+boundary pending a real identity provider — enabling it is necessary but **not
+sufficient** for production readiness, and it does not establish an
+authenticated individual identity. See `tests/test_student_identity.py`.
 
 Phase 6 (learning layer) — `test_learning_session.py` (18),
 `test_review_items.py` (11), `test_statistics.py` (12),

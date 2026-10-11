@@ -20,8 +20,8 @@ from src.api.dashboard_pages import HOME, LEARN, MOCKS, PARENT, PROGRESS, REVIEW
 from src.api.practice_page import PRACTICE_HTML
 
 from src.core.database import (
-    CanonicalQuestion, QuestionReviewStatus, get_engine, get_session_factory,
-    init_db,
+    CanonicalQuestion, QuestionOccurrence, QuestionReviewStatus,
+    SourceDocument, SourcePage, get_engine, get_session_factory, init_db,
 )
 
 DB_URL = os.environ.get("PLUS_DATABASE_URL", "sqlite:///./elevenplus.db")
@@ -55,7 +55,19 @@ def get_db():
 REVIEWER_TOKEN_ENV = "PLUS_REVIEWER_TOKEN"
 
 
-def require_reviewer(x_reviewer_token: str | None = Header(default=None)):
+def _reviewer_credential_name(token: str) -> str:
+    """Stable audit label for the shared reviewer credential (P1-7).
+
+    The app has no per-human identity provider, so the review trail cannot
+    honestly record "who reviewed this" as an individual. It records
+    ``reviewer:<sha256(token)[:12]>`` -- which token was used -- so the audit
+    stays truthful without leaking the secret itself.
+    """
+    import hashlib
+    return "reviewer:" + hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+
+
+def require_reviewer(x_reviewer_token: str | None = Header(default=None)) -> str:
     import hmac
     import os as _os
     expected = _os.environ.get(REVIEWER_TOKEN_ENV, "")
@@ -65,6 +77,64 @@ def require_reviewer(x_reviewer_token: str | None = Header(default=None)):
     if not x_reviewer_token or not hmac.compare_digest(
             x_reviewer_token, expected):
         raise HTTPException(403, "invalid or missing reviewer token")
+    return _reviewer_credential_name(x_reviewer_token)
+
+
+# Student ownership boundary (P1-13).
+# -----------------------------------
+# Student routes take a bare ``student_id`` (path or body) and there is no
+# user/identity model yet, so ANY caller who knows a student's id can read
+# that student's sessions, attempts, progress, reviews and parent dashboard,
+# or act on their session. This is an ownership hole, not merely a privacy
+# nicety: it lets one student tamper with or read another's learning record.
+#
+# The smallest correct boundary that does not fabricate a login system is an
+# opt-in strict mode, ``PLUS_REQUIRE_STUDENT_IDENTITY``. When enabled, a caller
+# must present ``X-Student-Id`` and it MUST equal the owning student id:
+#   * per-student GET endpoints  -> must equal the path ``student_id``;
+#   * session-scoped endpoints   -> must equal the session's stored
+#                                   ``student_id`` (looked up, not trusted from
+#                                   the URL);
+#   * ``POST /api/attempts``     -> must equal ``payload.student_id``.
+# When disabled (the default), behaviour is exactly as before so the stateless
+# demo UI and existing clients keep working. It is a thin, shared-credential
+# boundary pending a real identity provider -- exactly like the reviewer token
+# -- and does NOT establish an authenticated individual identity. Production
+# readiness requires a real auth system; enabling this flag is necessary but
+# not sufficient.
+STUDENT_IDENTITY_ENV = "PLUS_REQUIRE_STUDENT_IDENTITY"
+
+
+def student_identity_required() -> bool:
+    return os.environ.get(STUDENT_IDENTITY_ENV, "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _enforce_student_id(claimed: str | None, owner: str, resource: str) -> None:
+    """Fail closed (only when identity enforcement is on): the claimed student
+    must equal the resource's owning student id."""
+    if not student_identity_required():
+        return
+    if not claimed:
+        raise HTTPException(
+            401, f"missing student identity header X-Student-Id for {resource}")
+    if claimed != owner:
+        raise HTTPException(403, f"student identity does not own {resource}")
+
+
+def _enforce_session_owner(db: Session, session_id: str,
+                           claimed: str | None) -> None:
+    """Enforce that ``claimed`` owns the session ``session_id`` (owner is read
+    from the stored session, never from the URL)."""
+    if not student_identity_required():
+        return
+    from src.core.database import LearningStudySession
+    owner = (db.query(LearningStudySession.student_id)
+             .filter_by(id=session_id).scalar())
+    if owner is None:
+        # No such session: let the underlying handler return its 404.
+        return
+    _enforce_student_id(claimed, owner, "this session")
 
 
 app = FastAPI(title="11+ Platform API", version="0.1.0")
@@ -200,8 +270,10 @@ def start_session_route(payload: SessionStartIn, db: Session = Depends(get_db)):
 
 
 @app.get("/api/sessions/{session_id}")
-def get_session_state(session_id: str, db: Session = Depends(get_db)):
+def get_session_state(session_id: str, x_student_id: str | None = Header(default=None),
+                      db: Session = Depends(get_db)):
     """Resume payload: current question, index, progress, goals, activities."""
+    _enforce_session_owner(db, session_id, x_student_id)
     from src.learning.session import session_state
     try:
         return session_state(db, session_id)
@@ -219,8 +291,10 @@ class SubmitIn(BaseModel):
 
 @app.post("/api/sessions/{session_id}/answer")
 def session_answer(session_id: str, payload: SubmitIn,
+                   x_student_id: str | None = Header(default=None),
                    db: Session = Depends(get_db)):
     """ASSESS + EXPLAIN: record evidence, return feedback, schedule review."""
+    _enforce_session_owner(db, session_id, x_student_id)
     from src.learning.session import submit_answer
     try:
         # Retries are re-attempts on a previously-answered question, so they
@@ -236,8 +310,10 @@ def session_answer(session_id: str, payload: SubmitIn,
 
 @app.post("/api/sessions/{session_id}/skip")
 def session_skip(session_id: str, payload: SubmitIn | None = None,
+                 x_student_id: str | None = Header(default=None),
                  db: Session = Depends(get_db)):
     """SKIP: stored as evidence, creates a review item, never counts as wrong."""
+    _enforce_session_owner(db, session_id, x_student_id)
     from src.learning.session import skip_current
     question_id = (payload.question_id if payload and payload.question_id
                    else None)
@@ -250,8 +326,10 @@ def session_skip(session_id: str, payload: SubmitIn | None = None,
 
 
 @app.post("/api/sessions/{session_id}/retry")
-def session_retry(session_id: str, db: Session = Depends(get_db)):
+def session_retry(session_id: str, x_student_id: str | None = Header(default=None),
+                  db: Session = Depends(get_db)):
     """RETRY: allow a re-answer of the current question (hint returned)."""
+    _enforce_session_owner(db, session_id, x_student_id)
     from src.learning.session import retry_current
     try:
         return retry_current(db, session_id)
@@ -260,8 +338,10 @@ def session_retry(session_id: str, db: Session = Depends(get_db)):
 
 
 @app.post("/api/sessions/{session_id}/complete")
-def session_complete(session_id: str, db: Session = Depends(get_db)):
+def session_complete(session_id: str, x_student_id: str | None = Header(default=None),
+                     db: Session = Depends(get_db)):
     """COMPLETE: results view, mastery refresh, new recommendations."""
+    _enforce_session_owner(db, session_id, x_student_id)
     from src.learning.session import complete_session
     try:
         return complete_session(db, session_id)
@@ -270,8 +350,10 @@ def session_complete(session_id: str, db: Session = Depends(get_db)):
 
 
 @app.post("/api/sessions/{session_id}/abandon")
-def session_abandon(session_id: str, db: Session = Depends(get_db)):
+def session_abandon(session_id: str, x_student_id: str | None = Header(default=None),
+                    db: Session = Depends(get_db)):
     """ABANDON: close the session, keep all attempt evidence."""
+    _enforce_session_owner(db, session_id, x_student_id)
     from src.learning.session import abandon_session
     try:
         return abandon_session(db, session_id)
@@ -280,7 +362,9 @@ def session_abandon(session_id: str, db: Session = Depends(get_db)):
 
 
 @app.get("/api/sessions/{session_id}/results")
-def session_results_route(session_id: str, db: Session = Depends(get_db)):
+def session_results_route(session_id: str, x_student_id: str | None = Header(default=None),
+                          db: Session = Depends(get_db)):
+    _enforce_session_owner(db, session_id, x_student_id)
     from src.learning.session import session_results
     try:
         return session_results(db, session_id)
@@ -289,7 +373,8 @@ def session_results_route(session_id: str, db: Session = Depends(get_db)):
 
 
 @app.post("/api/attempts")
-def record_attempt(payload: AnswerIn, db: Session = Depends(get_db)):
+def record_attempt(payload: AnswerIn, x_student_id: str | None = Header(default=None),
+                   db: Session = Depends(get_db)):
     """Legacy evidence endpoint, kept for compatibility.
 
     Prefer ``POST /api/sessions/{id}/answer``. This path records evidence for
@@ -297,6 +382,7 @@ def record_attempt(payload: AnswerIn, db: Session = Depends(get_db)):
     runs the same logic with ``enforce_current=False``. It never advances the
     session cursor and it still refuses non-approved questions.
     """
+    _enforce_student_id(x_student_id, payload.student_id, "these attempts")
     from src.learning.session import get_session, submit_answer
     q = db.query(CanonicalQuestion).filter_by(id=payload.question_id).first()
     if q is None:
@@ -320,7 +406,8 @@ def record_attempt(payload: AnswerIn, db: Session = Depends(get_db)):
 
 
 @app.get("/api/review-queue")
-def review_queue(limit: int = 50, db: Session = Depends(get_db)):
+def review_queue(limit: int = 50, db: Session = Depends(get_db),
+                 _token: str = Depends(require_reviewer)):
     from src.pipeline.review import review_queue as rq
     rows = rq(db, limit)
     return [{"id": q.id, "subject": q.subject, "topic": q.topic,
@@ -329,19 +416,17 @@ def review_queue(limit: int = 50, db: Session = Depends(get_db)):
 
 class ReviewIn(BaseModel):
     status: str  # approved | rejected
-    reviewer: str = "api"
     reason: str = ""
 
 
 @app.post("/api/review/{question_id}")
 def review(question_id: str, payload: ReviewIn, db: Session = Depends(get_db),
-           _reviewer: None = Depends(require_reviewer)):
+           _token: str = Depends(require_reviewer)):
     if payload.status not in ("approved", "rejected"):
         raise HTTPException(400, "status must be approved|rejected")
     from src.pipeline.review import ApprovalContractError, set_status
     try:
-        set_status(db, question_id, payload.status, payload.reviewer,
-                   payload.reason)
+        set_status(db, question_id, payload.status, _token, payload.reason)
     except ApprovalContractError as exc:
         # The question exists but does not meet the trustworthy contract.
         raise HTTPException(400, str(exc))
@@ -351,7 +436,8 @@ def review(question_id: str, payload: ReviewIn, db: Session = Depends(get_db),
 
 
 @app.get("/api/review/{question_id}")
-def review_detail(question_id: str, db: Session = Depends(get_db)):
+def review_detail(question_id: str, db: Session = Depends(get_db),
+                  _token: str = Depends(require_reviewer)):
     """Reviewer workbench: the stored question, its provenance, verification
     states, extraction warnings and the precise unmet approval requirements."""
     from src.pipeline.review import approval_blockers, has_provenance
@@ -363,12 +449,25 @@ def review_detail(question_id: str, db: Session = Depends(get_db)):
         question_id=question_id).first()
     occs = db.query(QuestionOccurrence).filter_by(
         canonical_question_id=question_id).all()
-    provenance = [{
-        "document_id": o.document_id, "page_id": o.page_id,
-        "question_number": o.question_number,
-        "linked_answer": o.linked_answer,
-        "extraction_confidence": o.extraction_confidence,
-    } for o in occs]
+    _files = {d.id: (d.source_path or "") for d in
+              db.query(SourceDocument.source_path, SourceDocument.id).all()}
+    _pages = {}
+    for _d in db.query(SourcePage.page_number, SourcePage.text_content,
+                       SourcePage.id).all():
+        _pages[_d.id] = (_d.page_number or 0,
+                         (_d.text_content or "").strip())
+    provenance = []
+    for o in occs:
+        _pn, _pt = _pages.get(o.page_id, (0, ""))
+        provenance.append({
+            "document_id": o.document_id,
+            "filename": _files.get(o.document_id, ""),
+            "page_number": _pn,
+            "page_excerpt": _pt[:240] + "...",
+            "question_number": o.question_number or "",
+            "linked_answer": o.linked_answer or "",
+            "extraction_confidence": o.extraction_confidence,
+        })
     events = db.query(QuestionReviewEvent).filter_by(
         question_id=question_id).order_by(QuestionReviewEvent.created_at).all()
     return {
@@ -395,17 +494,16 @@ def review_detail(question_id: str, db: Session = Depends(get_db)):
 
 
 class VerifyIn(BaseModel):
-    reviewer: str = "api"
     evidence: str = ""
 
 
 @app.post("/api/review/{question_id}/verify-answer")
 def verify_answer_endpoint(question_id: str, payload: VerifyIn,
                            db: Session = Depends(get_db),
-                           _reviewer: None = Depends(require_reviewer)):
+                           _token: str = Depends(require_reviewer)):
     from src.pipeline.review import verify_answer
     try:
-        verify_answer(db, question_id, payload.reviewer, payload.evidence)
+        verify_answer(db, question_id, _token, payload.evidence)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return {"ok": True, "answer_status": "verified"}
@@ -414,17 +512,16 @@ def verify_answer_endpoint(question_id: str, payload: VerifyIn,
 @app.post("/api/review/{question_id}/verify-explanation")
 def verify_explanation_endpoint(question_id: str, payload: VerifyIn,
                                 db: Session = Depends(get_db),
-                                _reviewer: None = Depends(require_reviewer)):
+                                _token: str = Depends(require_reviewer)):
     from src.pipeline.review import verify_explanation
     try:
-        verify_explanation(db, question_id, payload.reviewer, payload.evidence)
+        verify_explanation(db, question_id, _token, payload.evidence)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return {"ok": True, "explanation_status": "verified"}
 
 
 class EditIn(BaseModel):
-    reviewer: str = "api"
     question_text: str | None = None
     correct_answer: str | None = None
     explanation: str | None = None
@@ -434,10 +531,10 @@ class EditIn(BaseModel):
 @app.post("/api/review/{question_id}/edit")
 def edit_endpoint(question_id: str, payload: EditIn,
                   db: Session = Depends(get_db),
-                  _reviewer: None = Depends(require_reviewer)):
+                  _token: str = Depends(require_reviewer)):
     from src.pipeline.review import edit_question
     try:
-        edit_question(db, question_id, payload.reviewer,
+        edit_question(db, question_id, _token,
                       question_text=payload.question_text,
                       correct_answer=payload.correct_answer,
                       explanation=payload.explanation,
@@ -449,8 +546,10 @@ def edit_endpoint(question_id: str, payload: EditIn,
 
 
 @app.get("/api/progress/{student_id}")
-def progress(student_id: str, db: Session = Depends(get_db)):
+def progress(student_id: str, x_student_id: str | None = Header(default=None),
+             db: Session = Depends(get_db)):
     """Progress view: mastery refresh, weak topics (existing shape) + extras."""
+    _enforce_student_id(x_student_id, student_id, "progress")
     from src.learning.review import review_summary
     from src.learning.weak_area import (
         open_recommendations, refresh_mastery, weak_skills, weak_topics,
@@ -474,8 +573,10 @@ def progress(student_id: str, db: Session = Depends(get_db)):
 @app.get("/api/statistics/{student_id}")
 def statistics_route(student_id: str, days: int = 14,
                      recent_window: int = 20,
+                     x_student_id: str | None = Header(default=None),
                      db: Session = Depends(get_db)):
     """Deterministic learning statistics (subject/topic/skill/type/review)."""
+    _enforce_student_id(x_student_id, student_id, "statistics")
     from src.learning.statistics import student_statistics
     from src.learning.weak_area import refresh_mastery
     refresh_mastery(db, student_id)
@@ -485,11 +586,13 @@ def statistics_route(student_id: str, days: int = 14,
 
 @app.get("/api/reviews/{student_id}")
 def reviews_route(student_id: str, limit: int = 50,
+                  x_student_id: str | None = Header(default=None),
                   db: Session = Depends(get_db)):
     """ReviewItem state for a student: due now, upcoming, per-state counts.
 
     Scheduling only - no FSRS. See src/learning/review.py.
     """
+    _enforce_student_id(x_student_id, student_id, "reviews")
     from src.learning.review import due_review_items, review_summary
     due = due_review_items(db, student_id, limit=limit)
     summary = review_summary(db, student_id)
@@ -507,8 +610,10 @@ def reviews_route(student_id: str, limit: int = 50,
 
 @app.get("/api/recommendations/{student_id}")
 def recommendations_route(student_id: str, refresh: bool = False,
+                          x_student_id: str | None = Header(default=None),
                           db: Session = Depends(get_db)):
     """What the student should do next (deterministic, no LLM)."""
+    _enforce_student_id(x_student_id, student_id, "recommendations")
     from src.learning.weak_area import (
         open_recommendations, refresh_recommendations,
     )
@@ -518,11 +623,13 @@ def recommendations_route(student_id: str, refresh: bool = False,
 
 
 @app.get("/api/loop/{student_id}")
-def loop_route(student_id: str, db: Session = Depends(get_db)):
+def loop_route(student_id: str, x_student_id: str | None = Header(default=None),
+               db: Session = Depends(get_db)):
     """The educational loop snapshot:
     LEARN -> PRACTISE -> ASSESS -> IDENTIFY ERROR -> EXPLAIN -> REVIEW ->
     RE-PRACTISE -> UPDATE MASTERY. Works without any LLM call.
     """
+    _enforce_student_id(x_student_id, student_id, "loop")
     from src.learning.loop import loop_snapshot
     from src.learning.weak_area import refresh_mastery
     # UPDATE MASTERY step: recompute from fresh evidence before reading
@@ -560,7 +667,9 @@ def curriculum(topic_id: str, db: Session = Depends(get_db)):
 
 
 @app.get("/api/parent/{student_id}")
-def parent_dashboard(student_id: str, db: Session = Depends(get_db)):
+def parent_dashboard(student_id: str, x_student_id: str | None = Header(default=None),
+                     db: Session = Depends(get_db)):
+    _enforce_student_id(x_student_id, student_id, "parent dashboard")
     from src.learning.parent_summary import parent_summary
     return parent_summary(db, student_id)
 

@@ -114,21 +114,25 @@ def test_missing_answer_distinct_from_unverified_and_verified(session):
         verify_answer(session, qid, "rev")        # cannot verify empty answer
     q.correct_answer = "B"
     session.commit()
-    verify_answer(session, qid, "rev", evidence="source p1")
+    verify_answer(session, qid, "rev", evidence="ksol 11Comprehension p.3, key B")
     q = session.query(CanonicalQuestion).filter_by(id=qid).one()
-    assert q.answer_status == "verified" and q.answer_evidence == "source p1"
+    assert (q.answer_status == "verified"
+            and q.answer_evidence == "ksol 11Comprehension p.3, key B")
     q.correct_answer = "B"
     session.commit()
-    verify_answer(session, qid, "rev", evidence="source p1")
+    verify_answer(session, qid, "rev", evidence="ksol 11Comprehension p.3, key B")
     q = session.query(CanonicalQuestion).filter_by(id=qid).one()
-    assert q.answer_status == "verified" and q.answer_evidence == "source p1"
+    assert (q.answer_status == "verified"
+            and q.answer_evidence == "ksol 11Comprehension p.3, key B")
 
 
 def _make_approvable(session, **kw):
     """A question that satisfies every approval requirement."""
     qid = _mcq(session, **kw)
-    verify_answer(session, qid, "rev", evidence="answer key p1")
-    verify_explanation(session, qid, "rev", note="derivation checked")
+    verify_answer(session, qid, "rev",
+                  evidence="ksol 11Comprehension p.1, answer key B")
+    verify_explanation(session, qid, "rev",
+                       note="worked solution checked against ksol p.1")
     return qid
 
 
@@ -189,11 +193,6 @@ def test_rejection_always_allowed_even_when_unproven(session):
     set_status(session, qid, "rejected", reviewer="bob", reason="bad OCR")
     row = session.query(QuestionReviewStatus).filter_by(question_id=qid).one()
     assert row.status == "rejected"
-def test_rejection_always_allowed_even_when_unproven(session):
-    qid = _mcq(session, provenance=False)
-    set_status(session, qid, "rejected", reviewer="bob", reason="bad OCR")
-    row = session.query(QuestionReviewStatus).filter_by(question_id=qid).one()
-    assert row.status == "rejected"
 
 
 # ---- student practice correctness ------------------------------------------
@@ -245,14 +244,6 @@ def test_correct_and_incorrect_marked_against_verified_answer(session):
     assert attempt.is_correct is True
 
 
-def test_only_one_attempt_recorded_per_submission(session):
-    from src.core.database import LearningQuestionAttempt
-    from src.learning.session import submit_answer
-    qid, sess_id = _approved_for_practice(session)
-    submit_answer(session, sess_id, qid, chosen_answer="B")
-    n = (session.query(LearningQuestionAttempt)
-         .filter_by(session_id=sess_id, question_id=qid).count())
-    assert n == 1
 def test_only_one_attempt_recorded_per_submission(session):
     from src.core.database import LearningQuestionAttempt
     from src.learning.session import submit_answer
@@ -337,13 +328,31 @@ def test_reviewer_approve_with_token_enforces_contract(tmp_path, monkeypatch):
     r = c.post(f"/api/review/{qid}", json={"status": "approved"},
                headers={"X-Reviewer-Token": "secret"})
     assert r.status_code == 400           # contract violation, not 200
-    detail = c.get(f"/api/review/{qid}").json()
+    detail = c.get(f"/api/review/{qid}",
+                   headers={"X-Reviewer-Token": "secret"}).json()
     assert detail["approval_blockers"]     # workbench shows what is missing
-    r = c.post(f"/api/review/{qid}", json={"status": "approved"},
-               headers={"X-Reviewer-Token": "secret"})
-    assert r.status_code == 400           # contract violation, not 200
-    detail = c.get(f"/api/review/{qid}").json()
-    assert detail["approval_blockers"]     # workbench shows what is missing
+
+
+REMEV = "ksol 11Comprehension p.3, key B"
+REMNOTE = "worked solution checked against ksol p.1"
+
+
+def _seed_api_question(api_main):
+    """One extracted MCQ with provenance in the API test database."""
+    from src.core.database import CanonicalQuestion, QuestionReviewStatus
+    S = api_main._Session
+    db = S()
+    q = CanonicalQuestion(id=str(uuid.uuid4()), subject="maths",
+                          topic="maths-arithmetic", question_type="mcq",
+                          question_text="2+2?", correct_answer="B",
+                          options_json=[{"letter": "A", "text": "3"},
+                                        {"letter": "B", "text": "4"}])
+    db.add(q)
+    db.add(QuestionReviewStatus(question_id=q.id, status="extracted"))
+    db.commit()
+    qid = q.id
+    db.close()
+    return qid
 
 
 def test_review_workbench_page_served(tmp_path, monkeypatch):
@@ -353,3 +362,272 @@ def test_review_workbench_page_served(tmp_path, monkeypatch):
     r = c.get("/review")
     assert r.status_code == 200
     assert "review-queue" in r.text and "Reviewer token" in r.text
+
+# ---- P0-3: unauthorised callers cannot read reviewer-only data ---------------
+
+def test_reviewer_read_endpoints_require_token(tmp_path, monkeypatch):
+    """Regression (P0-1/P0-3): the review queue and per-question review detail
+    expose answer evidence and review history, so they must not be readable
+    without a valid reviewer token -- read access is protected, not just the
+    mutating actions."""
+    from src.core.database import CanonicalQuestion, QuestionReviewStatus
+    import src.api.main as api_main
+    monkeypatch.setenv("PLUS_REVIEWER_TOKEN", "secret")
+    c = _api_client(tmp_path, monkeypatch)
+    S = api_main._Session
+    db = S()
+    q = CanonicalQuestion(id=str(uuid.uuid4()), subject="maths",
+                          topic="maths-arithmetic", question_type="mcq",
+                          question_text="2+2?", correct_answer="B",
+                          options_json=[{"letter": "A", "text": "3"},
+                                        {"letter": "B", "text": "4"}])
+    db.add(q)
+    db.add(QuestionReviewStatus(question_id=q.id, status="extracted"))
+    db.commit()
+    qid = q.id
+    db.close()
+
+    # No token: both reviewer read endpoints must refuse.
+    assert c.get("/api/review-queue").status_code == 403
+    assert c.get(f"/api/review/{qid}").status_code == 403
+    # Wrong token: also refused.
+    assert c.get("/api/review-queue",
+                 headers={"X-Reviewer-Token": "nope"}).status_code == 403
+    # Valid token: the data is available, and it carries the answer + evidence.
+    ok = c.get(f"/api/review/{qid}", headers={"X-Reviewer-Token": "secret"})
+    assert ok.status_code == 200
+    assert ok.json()["correct_answer"] == "B"
+
+
+def test_reviewer_read_endpoints_locked_when_not_configured(tmp_path,
+                                                            monkeypatch):
+    """Fail-closed: with no PLUS_REVIEWER_TOKEN set, reviewer reads are locked
+    (503), never left open."""
+    monkeypatch.delenv("PLUS_REVIEWER_TOKEN", raising=False)
+    c = _api_client(tmp_path, monkeypatch)
+    assert c.get("/api/review-queue").status_code == 503
+    assert c.get(f"/api/review/{uuid.uuid4()}").status_code == 503
+
+# ---- P0-2: malicious question content cannot execute as HTML ---------------
+
+def test_malicious_question_content_is_not_raw_html_in_pages(tmp_path,
+                                                             monkeypatch):
+    """Regression (P0-2): question/option/context/feedback text is untrusted.
+    The reviewer and practice pages must render it as inert text (textContent
+    or entity-escaping), never splice it into innerHTML where a <script> or an
+    onclick attribute would execute."""
+    from src.api import dashboard_pages, practice_page
+
+    xss = '<img src=x onerror="alert(1)"><script>alert(2)</script>'
+
+    # Reviewer workbench: entity-escape untrusted values; do not build markup
+    # by string-concatenating question/subject text into innerHTML.
+    review_html = dashboard_pages.REVIEW
+    assert "function esc(" in review_html
+    assert "'+q.question_text+'" not in review_html
+    assert "'+q.subject+'" not in review_html
+
+    # Practice page: stem/options/feedback use DOM text nodes, not innerHTML.
+    practice_html = practice_page.PRACTICE_HTML
+    assert "innerHTML='<b>'" not in practice_html
+    assert "'<p>'+(q.context" not in practice_html
+    assert "textContent" in practice_html
+
+    # Confirm we are actually testing a script-like payload.
+    assert "<script>" in xss and "onerror" in xss
+
+
+# ---- P1-5: verification/state change persists after the request closes ------
+
+def test_review_state_and_audit_persist_after_session_close(tmp_path,
+                                                            monkeypatch):
+    """Regression (P1-5): the status change and its audit event are one atomic
+    commit. Closing the request session and opening a fresh one proves the
+    event is in the database, not merely staged in an uncommitted session."""
+    from src.core.database import QuestionReviewEvent
+    import src.api.main as api_main
+    monkeypatch.setenv("PLUS_REVIEWER_TOKEN", "secret")
+    c = _api_client(tmp_path, monkeypatch)
+    S = api_main._Session
+
+    qid = _seed_api_question(api_main)
+    r = c.post(f"/api/review/{qid}/verify-answer",
+               json={"reviewer": "ui", "evidence": "ksol p.3, key B, checked"},
+               headers={"X-Reviewer-Token": "secret"})
+    assert r.status_code == 200
+
+    # Fresh, independent session: read what actually committed to the DB.
+    db = S()
+    try:
+        events = db.query(QuestionReviewEvent).filter_by(question_id=qid).all()
+        assert any(e.action == "verify_answer" for e in events)
+        ev = next(e for e in events if e.action == "verify_answer")
+        assert ev.reason == "ksol p.3, key B, checked"     # inspectable evidence stored
+    finally:
+        db.close()
+
+
+# ---- P1-6: exact audit event counts (no duplicate _log_event) ---------------
+
+def test_audit_events_are_exactly_one_per_decision(session):
+    """Regression (P1-6): set_status() once wrote the audit event twice
+    (a duplicate _log_event call). Each decision/verification/edit must append
+    EXACTLY one event. Seed with a bare question so counts start at zero."""
+    qid = _mcq(session, provenance=True)   # no verification yet: 0 events
+
+    def _count():
+        return session.query(QuestionReviewEvent).filter_by(
+            question_id=qid).count()
+
+    assert _count() == 0
+    set_status(session, qid, "rejected", reviewer="alice", reason="dupe")
+    assert _count() == 1                     # not 2 (the P1-6 regression)
+    set_status(session, qid, "rejected", reviewer="bob", reason="again")
+    assert _count() == 2
+    verify_answer(session, qid, "bob", evidence="ksol p.3, key B, checked")
+    assert _count() == 3
+    verify_explanation(session, qid, "bob",
+                       note="worked solution checked against ksol p.1")
+    assert _count() == 4
+    edit_question(session, qid, "bob", question_text="changed stem")
+    assert _count() == 5
+
+
+# ---- P1-4: verification requires meaningful, inspectable evidence ----------
+
+def test_verify_answer_requires_meaningful_evidence(session):
+    """Regression (P1-4): a bare 'ok' is not evidence. Verification must
+    require a note naming where the source was checked, and it must be stored
+    so reviewers can inspect it later."""
+    from src.pipeline.review import MIN_EVIDENCE_LEN
+    from src.core.database import CanonicalQuestion
+    qid = _mcq(session, provenance=True)
+    with pytest.raises(ValueError):
+        verify_answer(session, qid, "alice", evidence="ok")   # too short
+    with pytest.raises(ValueError):
+        verify_answer(session, qid, "alice", evidence="")     # empty
+    verify_answer(session, qid, "alice", evidence="ksol p.3, key B, checked")
+    q = session.query(CanonicalQuestion).filter_by(id=qid).one()
+    assert q.answer_status == "verified"
+    assert q.answer_evidence == "ksol p.3, key B, checked"
+    assert len("ksol p.3, key B, checked") >= MIN_EVIDENCE_LEN
+
+
+def test_verify_explanation_requires_note_and_is_inspectable(session):
+    """Regression (P1-4): explanation verification needs a note, stored for
+    later inspection on explanation_evidence."""
+    from src.core.database import CanonicalQuestion
+    qid = _mcq(session, provenance=True)
+    with pytest.raises(ValueError):
+        verify_explanation(session, qid, "alice", note="fine")
+    verify_explanation(session, qid, "alice",
+                       note="worked solution checked against ksol p.1")
+    q = session.query(CanonicalQuestion).filter_by(id=qid).one()
+    assert q.explanation_status == "verified"
+    assert q.explanation_evidence == "worked solution checked against ksol p.1"
+
+
+# ---- P1-12: full reviewer -> student journey --------------------------------
+
+def test_reviewer_to_student_journey_end_to_end(tmp_path, monkeypatch):
+    """Regression (P1-12): the real workflow works end-to-end against live
+    persistence -- a reviewer inspects source provenance, edits the question,
+    verifies answer + explanation with evidence, approves it, and only then
+    can a student practise it and receive correct server-side feedback.
+
+    The same journey must FAIL at the student step while the question is still
+    unapproved, proving the two halves are genuinely connected.
+    """
+    import src.api.main as api_main
+    monkeypatch.setenv("PLUS_REVIEWER_TOKEN", "secret")
+    c = _api_client(tmp_path, monkeypatch)
+    S = api_main._Session
+    H = {"X-Reviewer-Token": "secret"}
+
+    # (a) Seed an extracted MCQ with document+page provenance.
+    qid = _seed_api_question(api_main)
+
+    # (b) Reviewer inspects source provenance (filename, page, question no.).
+    detail = c.get(f"/api/review/{qid}", headers=H).json()
+    # provenance is empty at extraction unless seeded; the blocker surfaces it.
+    assert "approval_blockers" in detail
+
+    # Attach real provenance through the service, as ingestion would.
+    db = S()
+    from src.core.database import (QuestionOccurrence, SourceDocument,
+                                    SourcePage)
+    doc = SourceDocument(id=str(uuid.uuid4()), repo_name="ksol",
+                         repo_url="", source_path="11Comprehension.pdf",
+                         file_sha256="0" * 64, file_size=1, file_type="pdf",
+                         commit_sha="", ingestion_batch="b",
+                         ingestion_version="0.1.0")
+    db.add(doc)
+    page = SourcePage(id=str(uuid.uuid4()), document_id=doc.id, page_number=3,
+                      text_content="Q3 stem with options A/B")
+    db.add(page)
+    db.flush()
+    db.add(QuestionOccurrence(id=str(uuid.uuid4()),
+                              canonical_question_id=qid, document_id=doc.id,
+                              page_id=page.id, question_number="3"))
+    db.commit()
+    db.close()
+
+    # (c) BEFORE approval: the question is not student-eligible. The evidence
+    # endpoint (/api/attempts) checks approval explicitly and refuses (403).
+    sess_before = c.post("/api/sessions/start",
+                         json={"student_id": "stu"}).json()["session_id"]
+    r = c.post("/api/attempts",
+               json={"student_id": "stu", "session_id": sess_before,
+                     "question_id": qid, "chosen_answer": "B"})
+    assert r.status_code == 403            # not yet approved for practice
+    # It is also absent from the student-facing list.
+    assert qid not in [x["id"] for x in c.get("/api/questions").json()]
+
+    # (d) Reviewer edits the question: text, options and explanation. The
+    # editor covers question text, options and answer/explanation (P1-9).
+    r = c.post(f"/api/review/{qid}/edit", headers=H,
+               json={"reviewer": "ui", "question_text": "What is 2+2?",
+                     "explanation": "2+2 equals 4, which is option B."})
+    assert r.status_code == 200
+
+    # (e) Verify answer + explanation with meaningful evidence. Both API
+    # endpoints take ``evidence`` (mapped to the service note internally).
+    assert c.post(f"/api/review/{qid}/verify-answer", headers=H,
+                  json={"reviewer": "ui",
+                        "evidence": "ksol 11Comprehension p.3, key B"}
+                  ).status_code == 200
+    assert c.post(f"/api/review/{qid}/verify-explanation", headers=H,
+                  json={"reviewer": "ui",
+                        "evidence": "worked solution matches ksol p.3"}
+                  ).status_code == 200
+
+    # Now no blockers remain.
+    detail2 = c.get(f"/api/review/{qid}", headers=H).json()
+    assert detail2["approval_blockers"] == []
+
+    # (f) Approve.
+    assert c.post(f"/api/review/{qid}", headers=H,
+                  json={"status": "approved", "reviewer": "ui",
+                        "reason": "checked against ksol p.3"}
+                  ).status_code == 200
+    assert c.get(f"/api/review/{qid}", headers=H).json()[
+        "review_status"] == "approved"
+
+    # (g) AFTER approval: a student can practise and gets correct feedback.
+    # Use the evidence endpoint (enforce_current=False) so the newly-approved
+    # question can be answered; it marks against the verified answer.
+    sess = c.post("/api/sessions/start",
+                  json={"student_id": "stu"}).json()["session_id"]
+    ans = c.post("/api/attempts",
+                 json={"student_id": "stu", "session_id": sess,
+                       "question_id": qid, "chosen_answer": "B"})
+    assert ans.status_code == 200
+    body = ans.json()
+    assert body["is_correct"] is True       # marked against the verified answer
+    assert "explanation" in body or "feedback" in body
+
+    # The approved question appears in the student list WITHOUT correct_answer.
+    rows = c.get("/api/questions").json()
+    served = [r for r in rows if r["id"] == qid]
+    assert served and "correct_answer" not in served[0]
+

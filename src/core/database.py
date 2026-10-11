@@ -143,6 +143,8 @@ class CanonicalQuestion(Base):
         String, default="missing", server_default="missing")
     answer_evidence: Mapped[str] = mapped_column(
         Text, default="", server_default="")
+    explanation_evidence: Mapped[str] = mapped_column(
+        Text, default="", server_default="")
     extraction_warnings_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
     language: Mapped[str] = mapped_column(String, default="en")
     exam_board: Mapped[str] = mapped_column(String, default="")

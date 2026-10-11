@@ -14,6 +14,17 @@ bank. It enforces the Question Bank v1 contract:
 
 Editing a verified answer or explanation resets that field to ``candidate``
 so a later edit can never silently keep a stale verification.
+
+Reviewer identity model
+-----------------------
+The review trail records a ``reviewer`` identity. The application has no user
+identity provider, so this value is the *shared development credential*
+(its token hash and name), not an individual human. It is stored verbatim in
+``CanonicalQuestion.answer_evidence``/``question_review_events.reviewer`` purely
+as an audit reference. It must never be interpreted as evidence of who a
+student is or of any individual's verified identity. Reviewer mutations are
+gated server-side by ``require_reviewer()`` (P0-1 / P1-7).
+so a later edit can never silently keep a stale verification.
 """
 from __future__ import annotations
 
@@ -33,6 +44,12 @@ REJECTED = "rejected"
 VERIFIED = "verified"
 CANDIDATE = "candidate"
 MISSING = "missing"
+
+# Minimum inspectable content for a verification note/evidence string.
+# A note must name WHERE the reviewer checked the source (e.g. "ksol p.3,
+# key C"), not just "ok". 16 chars is deliberately low: it blocks empty and
+# trivial notes ("yes", "ok") without demanding a rigid evidence schema.
+MIN_EVIDENCE_LEN = 16
 
 
 class ApprovalContractError(ValueError):
@@ -117,10 +134,24 @@ def approval_blockers(session: Session, question_id: str) -> list[str]:
         blockers.append("no occurrence with document+page provenance")
     if _looks_mcq(q):
         labels = option_labels(q)
+        option_items = q.options_json or []
+        option_texts = [
+            (str(o.get("text", "") if isinstance(o, dict) else o)).strip()
+            for o in option_items]
+        if len(option_items) < 2:
+            blockers.append("mcq requires at least two options")
         if len(labels) < 2:
             blockers.append("mcq requires at least two labelled options")
+        if len(labels) != len(option_items):
+            # option_labels() drops empties, so a length mismatch means some
+            # option has a missing/blank label (or a duplicate-shaped entry).
+            blockers.append("mcq option has empty label")
         if len(set(l.upper() for l in labels)) != len(labels):
-            blockers.append("option labels are not distinguishable")
+            blockers.append("mcq option labels are not distinguishable")
+        if len(option_texts) != len(set(t.lower() for t in option_texts)):
+            blockers.append("mcq option texts are not distinguishable")
+        if any(not t for t in option_texts):
+            blockers.append("mcq option has empty text")
         ans = (q.correct_answer or "").strip()
         if not ans:
             blockers.append("mcq requires a correct_answer")
@@ -158,41 +189,67 @@ def set_status(session: Session, question_id: str, status: str,
         "reject" if status == REJECTED else "status")
     _log_event(session, question_id, action, reviewer,
                from_status=from_status, to_status=status, reason=reason)
-    _log_event(session, question_id, action, reviewer,
-               from_status=from_status, to_status=status, reason=reason)
+    # Atomic: state change + audit event persist in ONE commit. Splitting them
+    # across commits would leave the DB half-written on failure (status moved
+    # but no audit, or vice versa). P1-5.
     session.commit()
 
 
 def verify_answer(session: Session, question_id: str, reviewer: str,
                   evidence: str = "") -> None:
-    """Record that a human verified the answer against source evidence."""
+    """Record that a human verified the answer against source evidence.
+
+    ``evidence`` is required and must be meaningful (P1-4): it must name
+    WHERE the answer was checked (e.g. "ksol p.3, key C"), not just "ok".
+    The evidence is stored verbatim on ``answer_evidence`` so reviewers can
+    inspect it later, and copied into the audit event reason.
+    """
     q = session.query(CanonicalQuestion).filter_by(id=question_id).first()
     if q is None:
         raise ValueError(f"no canonical question {question_id}")
     if not (q.correct_answer or "").strip():
         raise ValueError(f"question {question_id} has no answer to verify")
+    if len((evidence or "").strip()) < MIN_EVIDENCE_LEN:
+        raise ValueError(
+            "answer evidence is too short; record where you checked the "
+            "source (e.g. filename p.N, key X) before marking verified")
+    prev = q.answer_status
     q.answer_status = VERIFIED
-    if evidence:
-        q.answer_evidence = evidence
+    q.answer_evidence = evidence.strip()
     q.updated_at = _now()
-    session.commit()
     _log_event(session, question_id, "verify_answer", reviewer,
-               to_status=VERIFIED, reason=evidence)
+               from_status=prev, to_status=VERIFIED,
+               reason=evidence.strip())
+    # Atomic (P1-5): status flip + evidence + audit event in ONE commit.
+    session.commit()
 
 
 def verify_explanation(session: Session, question_id: str, reviewer: str,
                        note: str = "") -> None:
-    """Record that a human verified the explanation supports the answer."""
+    """Record that a human verified the explanation supports the answer.
+
+    ``note`` is required and must be meaningful (P1-4): it must record what
+    was checked (e.g. "worked solution matches options, ksol p.3"). Stored
+    verbatim on ``explanation_evidence`` so reviewers can inspect it later.
+    """
     q = session.query(CanonicalQuestion).filter_by(id=question_id).first()
     if q is None:
         raise ValueError(f"no canonical question {question_id}")
     if not (q.explanation or "").strip():
         raise ValueError(f"question {question_id} has no explanation to verify")
+    if len(note.strip()) < MIN_EVIDENCE_LEN:
+        raise ValueError(
+            "verification note is too short; record where you checked the "
+            "source (e.g. filename p.N) before marking verified")
+    prev_expl = q.explanation_status
     q.explanation_status = VERIFIED
+    q.explanation_evidence = note.strip()
     q.updated_at = _now()
-    session.commit()
     _log_event(session, question_id, "verify_explanation", reviewer,
-               to_status=VERIFIED, reason=note)
+               from_status=prev_expl, to_status=VERIFIED,
+               reason=note.strip())
+    # Atomic (P1-5): status flip + evidence + audit event in ONE commit.
+    session.commit()
 
 
 def edit_question(session: Session, question_id: str, reviewer: str,
@@ -230,7 +287,9 @@ def edit_question(session: Session, question_id: str, reviewer: str,
         if q.answer_status == VERIFIED:
             q.answer_status = CANDIDATE  # option->answer mapping may be stale
     q.updated_at = _now()
-    session.commit()
+    # Atomic (P1-5): edited fields + audit event in ONE commit. The original
+    # code committed, logged, then committed again, leaving a partial edit
+    # visible if the second commit failed.
     _log_event(session, question_id, "edit", reviewer,
                reason="; ".join(notes) if notes else "no-op")
     session.commit()

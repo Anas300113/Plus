@@ -27,14 +27,24 @@ async function start(){
 }
 function show(){
  const q=S.qs[S.i]; if(!q){document.getElementById('q').textContent='Done.';document.getElementById('opts').innerHTML='';return;}
- document.getElementById('q').innerHTML='<b>'+(q.subject||'')+' / '+(q.topic||'')+'</b><p>'+(q.context?q.context+'<br>':'')+q.question_text+'</p>';
+ const qhdr=document.getElementById('q'); qhdr.textContent='';
+ const subj=document.createElement('b'); subj.textContent=(q.subject||'')+' / '+(q.topic||''); qhdr.appendChild(subj);
+ const stem=document.createElement('p'); stem.textContent=q.question_text||''; qhdr.appendChild(stem);
+ if(q.context){const ctx=document.createElement('p'); ctx.textContent=q.context; qhdr.insertBefore(ctx,stem);}
  const box=document.getElementById('opts'); box.innerHTML=''; document.getElementById('fb').hidden=true;
  (q.options||[]).forEach(o=>{const b=document.createElement('button');b.className='opt';b.textContent=o.letter+') '+o.text; b.onclick=()=>answer(q,o.letter); box.appendChild(b);});
 }
 async function answer(q,letter){
  const r=await (await fetch('/api/attempts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({student_id:S.sid,session_id:S.sess,question_id:q.id,chosen_answer:letter})})).json();
- const fb=document.getElementById('fb'); fb.hidden=false;
- fb.innerHTML=(r.is_correct?'Correct. ':'Not quite. ')+(r.explanation||'')+'<br><button onclick="next()">Next</button>';
+ const fb=document.getElementById('fb'); fb.hidden=false; fb.textContent='';
+ const head=document.createElement('b');
+ head.textContent=r.is_correct?'Correct. ':'Not quite. ';
+ fb.appendChild(head);
+ const exp=document.createElement('span'); exp.textContent=r.explanation||'';
+ fb.appendChild(exp);
+ const br=document.createElement('br'); fb.appendChild(br);
+ const b=document.createElement('button'); b.textContent='Next'; b.onclick=next;
+ fb.appendChild(b);
 }
 function next(){S.i++;show();}
 </script></body></html>"""
