@@ -95,6 +95,47 @@ def test_build_index_search_returns_no_key_content(session):
     assert all("1. B" not in h["text"] for h in key_hits)
 
 
+def _mkdoc_pages(session, filename, pages: dict[int, str]):
+    """Seed ONE SourceDocument with several pages (a real corpus file is one
+    document; _mkpage creates a fresh document per call and must not be used
+    for multi-page document-level scenarios)."""
+    doc = SourceDocument(
+        id=str(uuid.uuid4()), repo_name="test", source_path=filename,
+        file_sha256=str(uuid.uuid4()), file_type="pdf")
+    session.add(doc)
+    session.flush()
+    for page_number, text in pages.items():
+        session.add(SourcePage(
+            id=str(uuid.uuid4()), document_id=doc.id, page_number=page_number,
+            text_content=text, text_confidence=0.9 if text else 0.0,
+            ocr_used=False, ocr_text=""))
+    session.commit()
+    return doc
+
+
+# ---- Gate scenario A: multi-page answer doc with innocuous filename ------
+def test_multi_page_answer_doc_with_innocuous_filename_fully_excluded(
+        session):
+    """Scenario A: maths-paper.pdf page 1 opens with an answer-sheet heading;
+    later pages contain answer-like material WITHOUT the heading. ALL pages of
+    a classified answer document must be excluded, not just the heading page.
+    (Document-level classification, not page-level.)"""
+    _mkdoc_pages(session, "maths-paper.pdf", {
+        1: "Answer Sheet\n1. B\n2. A\n3. C",
+        2: "1. C\n2. D\n3. A\n4. B\n5. D\n6. C\n7. A\n8. B\n9. D\n10. A",
+        3: "11. B\n12. C\n13. D\n14. A\n15. B\n16. C\n17. D\n18. A\n19. B",
+    })
+    _mkpage(session, "fractions_notes.pdf", 1,
+            "Equivalent fractions have the same value. One half equals "
+            "two quarters and four eighths.")
+
+    idx = build_index(session)
+    leaked = [c for c in idx.chunks if c.filename == "maths-paper.pdf"]
+    assert leaked == [], f"answer-doc pages leaked into index: {leaked}"
+    # positive control: the separate legitimate document remains searchable
+    assert any(c.filename == "fractions_notes.pdf" for c in idx.chunks)
+
+
 # ---- Layer 2: search-time defense-in-depth (stale on-disk index) ----------
 
 _KEY_CHUNK = Chunk(
@@ -136,6 +177,58 @@ def test_stale_index_still_contains_key_on_disk_but_search_filters_it(
     assert any(h["filename"] == "fractions_notes.pdf" for h in good)
 
 
+def test_stale_index_rejects_filename_classified_doc_pages(tmp_path):
+    """Scenario B (what IS guaranteed): chunks from a filename-classified
+    document are rejected at search time even without the heading in the
+    chunk text -- every page shares the document's filename, which the chunk
+    retains as provenance (filename + document_id + meta.source_path)."""
+    page2 = Chunk(
+        chunk_id="stale-key-p2",
+        text="1. C\n2. D\n3. A\n4. B\n5. D",          # no heading present
+        filename="answer_sheet.pdf", page_number=2, page_id="sp9",
+        document_id="sd9", index=0, char_start=0, char_end=20)
+    normal = Chunk(
+        chunk_id="stale-normal-2",
+        text="Equivalent fractions have the same value. One half equals "
+             "two quarters and four eighths.",
+        filename="fractions_notes.pdf", page_number=1, page_id="sp8",
+        document_id="sd8", index=0, char_start=0, char_end=93)
+    idx = KnowledgeIndex()
+    idx.build([page2, normal])
+    path = tmp_path / "stale2.joblib"
+    idx.save(path)
+    loaded = KnowledgeIndex.load(path)
+    hits = loaded.search("1 C 2 D 3 A answers", top_k=5)
+    assert all(h["filename"] != "answer_sheet.pdf" for h in hits)
+    good = loaded.search("equivalent fractions halves quarters", top_k=5)
+    assert any(h["filename"] == "fractions_notes.pdf" for h in good)
+
+
+def test_stale_index_limitation_heading_classified_doc_needs_rebuild():
+    """Scenario B (DOCUMENTED LIMITATION, do not claim full stale-index
+    protection): a stale index built BEFORE document-level classification may
+    contain non-heading pages of a heading-classified document whose filename
+    is innocuous. Such a chunk carries no flag distinguishing it from ordinary
+    content -- filename and text are both innocent -- so search-time filtering
+    cannot identify it. Only a rebuild removes it. This test pins the current
+    behaviour honestly: the chunk IS returned, and the required remediation
+    is 'rebuild the index', not 'trust the filter'."""
+    doc_id = str(uuid.uuid4())
+    orphan_key_page = Chunk(
+        chunk_id="stale-orphan-key",
+        # bare answer lines listed below -- no heading, innocuous filename
+        text="1. C\n2. D\n3. A\n4. B\n5. D\nfinal answers listed below",
+        filename="maths-paper.pdf", page_number=2, page_id="sp7",
+        document_id=doc_id, index=0, char_start=0, char_end=20)
+    idx = KnowledgeIndex()
+    idx.build([orphan_key_page])
+    hits = idx.search("final answers listed", top_k=5)
+    # CURRENT behaviour pinned: cannot be detected from chunk provenance alone.
+    # Operational requirement: rebuild indexes built before this fix
+    # (python scripts/knowledge_cli.py index) -- see foundation-gate report.
+    assert any(h["filename"] == "maths-paper.pdf" for h in hits)
+
+
 # ---- End-to-end: the actual unauthenticated API endpoint ------------------
 
 def test_knowledge_search_endpoint_does_not_leak_answer_keys(tmp_path,
@@ -168,4 +261,45 @@ def test_knowledge_search_endpoint_does_not_leak_answer_keys(tmp_path,
     assert r2.status_code == 200
     ev2 = r2.json()["evidence"]
     assert any(h["filename"] == "fractions_notes.pdf" for h in ev2)
+
+
+def test_endpoint_rebuilt_index_multi_page_answer_doc_clean(tmp_path,
+                                                            monkeypatch,
+                                                            session):
+    """Scenario D on a REBUILT index: build from a DB containing the
+    multi-page innocuous-filename answer doc, persist, then query through the
+    real unauthenticated endpoint with alternate answer-seeking wording.
+    No page of the classified document may appear in any response."""
+    pytest = __import__("pytest")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+    import src.api.main as api_main
+    from src.knowledge.service import build_index
+
+    _mkdoc_pages(session, "maths-paper.pdf", {
+        1: "Answer Sheet\n1. B\n2. A\n3. C",
+        2: "1. C\n2. D\n3. A\n4. B\n5. D\n6. C\n7. A\n8. B\n9. D\n10. A",
+    })
+    _mkpage(session, "fractions_notes.pdf", 1,
+            "Equivalent fractions have the same value. One half equals "
+            "two quarters and four eighths.")
+    idx = build_index(session)
+    path = tmp_path / "rebuilt.joblib"
+    idx.save(path)
+    monkeypatch.setattr(api_main, "_KNOWLEDGE_INDEX_PATH", str(path))
+    client = TestClient(api_main.app)
+
+    for q in ("answer key maths paper", "1. C 2. D 3. A 4. B answers",
+              "marking scheme maths"):
+        r = client.post("/api/knowledge/search", json={"q": q, "k": 10})
+        assert r.status_code == 200
+        for h in r.json()["evidence"]:
+            assert h["filename"] != "maths-paper.pdf"
+            assert "1. C" not in h["text"]
+    # legitimate content still served
+    r2 = client.post("/api/knowledge/search",
+                     json={"q": "equivalent fractions halves quarters",
+                           "k": 5})
+    assert any(h["filename"] == "fractions_notes.pdf"
+               for h in r2.json()["evidence"])
 

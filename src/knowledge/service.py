@@ -23,20 +23,62 @@ from src.knowledge.chunk import chunk_text
 from src.knowledge.retriever import KnowledgeIndex
 
 
-def _is_answer_key_page(filename: str, text: str) -> bool:
-    """True when a page carries explicit answer-key evidence.
+def _key_document_ids(
+    session: Session,
+    *,
+    only_document_ids: list[str] | None = None,
+    batch_size: int = 200,
+) -> set[str]:
+    """Document ids classified as answer keys by a page-level key *heading*.
 
-    Single source of truth is :mod:`src.pipeline.link` -- the same classifier the
-    ingestion pipeline uses to decide which documents are answer keys. We reuse
-    it verbatim (filename marker OR an answer/marking-scheme page heading) so
-    the knowledge engine and the answer-linking step can never disagree about
-    what a key is. Imported lazily to keep the knowledge layer import-clean.
+    Document-level policy (foundation gate): if ANY page of a document opens
+    with an explicit answer/marking-scheme heading, the WHOLE document is an
+    answer key -- later pages of a key document repeat bare answer lines
+    without the heading and must never be indexed. The heading classifier is
+    the pipeline's authoritative :func:`text_is_answer_key_heading`; it is
+    applied to both ``text_content`` and ``ocr_text`` so scanned key documents
+    are caught too (fail closed). Only the document id set is retained --
+    never page content.
+
+    Filename-classified documents need no scan (the filename is shared by all
+    pages) and are filtered separately in :func:`iter_page_chunks`.
     """
-    from src.pipeline.link import (
-        filename_is_answer_key, text_is_answer_key_heading,
-    )
-    return (filename_is_answer_key(filename)
-            or text_is_answer_key_heading(text))
+    from src.pipeline.link import text_is_answer_key_heading
+
+    from src.core.logging import get_logger
+    log = get_logger("knowledge.service")
+
+    key_docs: set[str] = set()
+    last_id = ""
+    while True:
+        q = (session.query(SourcePage.id, SourcePage.document_id,
+                           SourcePage.text_content, SourcePage.ocr_text)
+             .order_by(SourcePage.id))
+        if last_id:
+            q = q.filter(SourcePage.id > last_id)
+        if only_document_ids is not None:
+            q = q.filter(SourcePage.document_id.in_(only_document_ids))
+        rows = q.limit(batch_size).all()
+        if not rows:
+            break
+        for pid, doc_id, text_content, ocr_text in rows:
+            last_id = pid
+            if doc_id in key_docs:
+                continue
+            if text_is_answer_key_heading(text_content or "") or \
+                    text_is_answer_key_heading(ocr_text or ""):
+                key_docs.add(doc_id)
+                # Review record: which document was classified. Filename only,
+                # never answer-key contents.
+                doc = session.query(SourceDocument).filter_by(
+                    id=doc_id).first()
+                name = (doc.source_path if doc else doc_id)
+                log.info(
+                    "answer-key document classified by page heading; "
+                    "excluded from retrieval index: %s", name)
+        if len(rows) < batch_size:
+            break
+    return key_docs
 
 
 def iter_page_chunks(
@@ -51,7 +93,21 @@ def iter_page_chunks(
 
     Uses keyset pagination on SourcePage.id so memory stays bounded regardless
     of corpus size.
+
+    Answer-key protection (P0) is document-level: a document is excluded in
+    full when its filename is key-marked OR any of its pages opens with an
+    answer/marking-scheme heading. Later pages of a key document repeat bare
+    answer lines without the heading, so page-level filtering alone leaks them.
     """
+    # Document-level classification pass (heading evidence). Filename evidence
+    # needs no pass -- every page shares the document's filename.
+    key_docs = _key_document_ids(
+        session, only_document_ids=only_document_ids, batch_size=batch_size)
+    logged_skip: set[str] = set()
+    from src.pipeline.link import filename_is_answer_key
+
+    from src.core.logging import get_logger
+    log = get_logger("knowledge.service")
     last_id = ""
     while True:
         q = session.query(SourcePage).order_by(SourcePage.id)
@@ -79,14 +135,18 @@ def iter_page_chunks(
                 continue  # never fabricate content for empty pages
             # human-facing filename (basename); keep full path in meta
             fname = filename.replace("\\", "/").rsplit("/", 1)[-1] or filename
-            # Answer-key protection (P0): never make answer-key content
-            # retrievable. A page is excluded when its document is named as a
-            # key (filename markers) OR the page itself opens with an explicit
-            # answer/marking-scheme heading -- the same evidence the ingestion
-            # pipeline trusts. Excluding at build time keeps protected content
-            # out of the persisted index entirely, so it cannot leak via the
-            # search endpoint, the explain grounding path, or a raw index file.
-            if _is_answer_key_page(fname, text):
+            # Answer-key protection (P0): document-level exclusion. The whole
+            # document is skipped when it is filename-classified or its id was
+            # flagged by the heading scan above. Nothing from a classified
+            # answer document enters the persisted index, so it cannot leak
+            # via the search endpoint, the explain grounding path, or a raw
+            # index file.
+            if page.document_id in key_docs or filename_is_answer_key(fname):
+                if page.document_id not in logged_skip:
+                    logged_skip.add(page.document_id)
+                    log.info(
+                        "answer-key document excluded from retrieval index: %s",
+                        fname)
                 last_id = page.id
                 continue
             yield from chunk_text(

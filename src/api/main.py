@@ -225,12 +225,16 @@ def create_session(student_id: str, session_type: str = "practice",
                    subject: str | None = None, topic: str | None = None,
                    limit: int = 20, planned_duration_seconds: int = 0,
                    from_review_queue: bool = False, seed: int = 42,
-                   db: Session = Depends(get_db)):
+                   db: Session = Depends(get_db),
+                   x_student_id: str | None = Header(default=None)):
     """Start a session through the explicit state machine.
 
     Backwards compatible: with only ``student_id`` supplied it behaves as
     before, but the question order is now frozen so the session can be resumed.
     """
+    # Ownership (P1): a caller must not create sessions attributed to another
+    # student by substituting the identifier.
+    _enforce_student_id(x_student_id, student_id, "session start")
     from src.learning.session import start_session
     try:
         s = start_session(
@@ -260,8 +264,12 @@ class SessionStartIn(BaseModel):
 
 
 @app.post("/api/sessions/start")
-def start_session_route(payload: SessionStartIn, db: Session = Depends(get_db)):
+def start_session_route(payload: SessionStartIn, db: Session = Depends(get_db),
+                        x_student_id: str | None = Header(default=None)):
     """Body-based session start (frozen order, goals, review-queue support)."""
+    # Ownership (P1): a caller must not create sessions attributed to another
+    # student by substituting the identifier.
+    _enforce_student_id(x_student_id, payload.student_id, "session start")
     from src.learning.session import start_session
     try:
         s = start_session(

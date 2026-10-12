@@ -182,3 +182,33 @@ def test_parent_access_by_arbitrary_student_id_is_NOT_prevented(env, monkeypatch
     assert r.status_code == 200, "documented gap: parent data readable by id"
 
 
+
+
+# ---- Foundation gate: session CREATION ownership (write path) -------------
+def test_creating_a_session_for_another_student_is_blocked(env, monkeypatch):
+    """Foundation gate P1: under strict identity, a caller must not be able to
+    create sessions ATTRIBUTED to another student by substituting the
+    identifier. Both session-creation route styles are covered. Before the
+    fix these two routes had no ownership guard at all (the session-scoped
+    routes were already guarded, so an attacker could not then answer inside
+    the planted session -- but the planted session still polluted the victim's
+    learning record)."""
+    c, _ = env
+    _strict(monkeypatch)
+    # body-based route: mismatched header -> 403; missing header -> 401
+    r = c.post("/api/sessions/start", json={"student_id": "victim"},
+               headers={"X-Student-Id": "attacker"})
+    assert r.status_code == 403
+    r = c.post("/api/sessions/start", json={"student_id": "victim"})
+    assert r.status_code == 401
+    # query-param route: same boundary
+    r = c.post("/api/sessions?student_id=victim",
+               headers={"X-Student-Id": "attacker"})
+    assert r.status_code == 403
+    r = c.post("/api/sessions?student_id=victim")
+    assert r.status_code == 401
+    # positive control: a student can still start their OWN session
+    r = c.post("/api/sessions/start", json={"student_id": "me"},
+               headers={"X-Student-Id": "me"})
+    assert r.status_code == 200 and r.json()["session_id"]
+
