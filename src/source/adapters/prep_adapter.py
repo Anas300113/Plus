@@ -26,6 +26,7 @@ _FORMAT_MAP = {
 
 class PrepAdapter(BaseAdapter):
     source_name = "11plus-prep"
+    licence_note = "MIT License, Copyright (c) 2026 Sahir Vhora"
 
     def to_canonical(self, external: dict[str, Any]) -> dict[str, Any]:
         options = external.get("options") or []

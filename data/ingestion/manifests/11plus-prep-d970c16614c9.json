@@ -1,0 +1,242 @@
+{
+  "source_repo": "https://github.com/SahirVhora/11plus-prep",
+  "source_sha": "d970c16614c95140dc946bd3f8f320aeef4a69f3",
+  "licence": "MIT License, Copyright (c) 2026 Sahir Vhora",
+  "import_batch": "prep-d970c16",
+  "imported_at_utc": "2026-10-12T20:31:04+00:00",
+  "totals": {
+    "files": 15,
+    "records": 1067,
+    "imported": 0,
+    "invalid": 0,
+    "duplicates_merged": 27,
+    "occurrences_added": 27,
+    "region_set_from_duplicate": 0,
+    "region_ambiguous": 8,
+    "region_conflicts_kept_for_review": 10,
+    "upstream_changed_files": 0
+  },
+  "files": [
+    {
+      "file": "birmingham.json",
+      "records": 62,
+      "sha256": "af7bca37c8d6ca0c1b8c3a7a2cf10725fafd98870baf9d2578ddf0897e6fd5b4",
+      "document_id": "be99de3a-00d5-4ce2-b424-6da7464ed951",
+      "upstream_changed": false
+    },
+    {
+      "file": "buckinghamshire.json",
+      "records": 70,
+      "sha256": "5146a2f464198aa6fa94389175b30422b431d4447dd2f9410978a94200514219",
+      "document_id": "669d6949-ab37-4a21-94b4-9f43c2e5ebd5",
+      "upstream_changed": false
+    },
+    {
+      "file": "english.json",
+      "records": 90,
+      "sha256": "fec968dfa0137a60c872279866d8cf9ba83dfc03a18bd153e613d621321f25c4",
+      "document_id": "24e6a653-dffc-4075-84f8-780feab89c8e",
+      "upstream_changed": false
+    },
+    {
+      "file": "essex.json",
+      "records": 60,
+      "sha256": "a6fd8e576da750ce006f387d1afcdfd8d12657210f7ea51d0dcdb24c9170b2fc",
+      "document_id": "7fe41230-3a17-427c-ac9f-ada2cc4a2400",
+      "upstream_changed": false
+    },
+    {
+      "file": "hertfordshire.json",
+      "records": 65,
+      "sha256": "62683a29f7cdc91ad2c66b4046ae5337b3d676ce9c20b0983dc3ebd7596310e6",
+      "document_id": "a6e215bb-c4cf-4ef9-8646-351f72975f07",
+      "upstream_changed": false
+    },
+    {
+      "file": "kent.json",
+      "records": 70,
+      "sha256": "1a2ba2c2ad987d558fc1eea17fe258ba60cb5bc097033c892aadaa4ff2061694",
+      "document_id": "f67bb1e8-13a9-4020-9a3e-d62151f334ec",
+      "upstream_changed": false
+    },
+    {
+      "file": "lancashire.json",
+      "records": 55,
+      "sha256": "4014a7f4248ab8c8ec04745d6c81d912dd9cf140b8f20223e606bc9e4058e45b",
+      "document_id": "310bbd2f-2897-45a8-9da0-4ecebf46b309",
+      "upstream_changed": false
+    },
+    {
+      "file": "lincolnshire.json",
+      "records": 55,
+      "sha256": "863ba754d2ea6b4e9d7beb5e228a8ec214b7f729094bef0a785541b7b4d3bb22",
+      "document_id": "56aae9ed-0418-42b5-93a7-8cccf038199b",
+      "upstream_changed": false
+    },
+    {
+      "file": "manchester.json",
+      "records": 65,
+      "sha256": "cbb53b038a1178ba46ac079a811067d647e12254bddf1a054fda725b604d1782",
+      "document_id": "3fd1485f-2b9d-402e-9ebb-25b4dc397ebf",
+      "upstream_changed": false
+    },
+    {
+      "file": "maths.json",
+      "records": 100,
+      "sha256": "cee20c72b21976990855f9449663f17e6dab0800638208e4050ef6e79174d663",
+      "document_id": "eca6f74e-2c60-4107-aae5-c43fb3382134",
+      "upstream_changed": false
+    },
+    {
+      "file": "nonverbal.json",
+      "records": 75,
+      "sha256": "9c1c608a85b78dc28ce28cf3f55d0d8a01c2426d1ba99f7bc0899b1271f75238",
+      "document_id": "bf0ac8c3-91bc-495e-8c8f-625d9ec1589d",
+      "upstream_changed": false
+    },
+    {
+      "file": "northern-ireland.json",
+      "records": 60,
+      "sha256": "44b065745d0343abf93a136eeeecd7e371f892d838066cba2a1c38ad5a546da6",
+      "document_id": "f73ca33d-6b68-46ac-9ccb-f3eade083e75",
+      "upstream_changed": false
+    },
+    {
+      "file": "verbal.json",
+      "records": 115,
+      "sha256": "d8f8993be965baba24c73efdb3004e191fdc3cd77e8a756d68cddd9b297f36b3",
+      "document_id": "4a50c046-8da8-4592-b9ef-5627be14e92f",
+      "upstream_changed": false
+    },
+    {
+      "file": "warwickshire.json",
+      "records": 65,
+      "sha256": "479ca1953bb5c658bda720642dd614ca1fcdf9c6c4b2b3d2c1e29c69220dc49c",
+      "document_id": "a27fa319-9771-4c0e-ac5f-0dbb33adb972",
+      "upstream_changed": false
+    },
+    {
+      "file": "yorkshire.json",
+      "records": 60,
+      "sha256": "de4c7b7314822018f50cd0dadac366a386f07fe606d5cda49a9d991ea83043db",
+      "document_id": "fe75f026-4e32-4d8d-9b5c-0702187ef6e8",
+      "upstream_changed": false
+    }
+  ],
+  "attribution_conflicts": [
+    {
+      "fingerprint": "5821ccd8dd98ea264a8168844cb7732cf9488f21a65f39778171cd20fe54302b",
+      "existing_region": "birmingham",
+      "existing_board": "GL",
+      "deterministic_region": "",
+      "deterministic_board": "GL",
+      "sources": [
+        "birmingham.json#bham-english-012",
+        "english.json#english-068",
+        "english.json#english-074",
+        "warwickshire.json#warks-english-007",
+        "warwickshire.json#warks-english-013",
+        "warwickshire.json#warks-english-017"
+      ]
+    },
+    {
+      "fingerprint": "9e9519bd63aee6d6cce0b212e1ef054bb492a6f356f35b441f4a74b5f3382f4d",
+      "existing_region": "birmingham",
+      "existing_board": "GL",
+      "deterministic_region": "",
+      "deterministic_board": "GL",
+      "sources": [
+        "birmingham.json#bham-english-016",
+        "northern-ireland.json#ni-english-027"
+      ]
+    },
+    {
+      "fingerprint": "384f264906178ccb9dc9baf8f1336803304f1b1cc29360781106c6b8552b6862",
+      "existing_region": "",
+      "existing_board": "mixed",
+      "deterministic_region": "warwickshire",
+      "deterministic_board": "GL",
+      "sources": [
+        "english.json#english-035",
+        "warwickshire.json#warks-english-006"
+      ]
+    },
+    {
+      "fingerprint": "31b74357d6d0238a968d5dab12d078718b4919356ea4bc265e6488f72baa7384",
+      "existing_region": "",
+      "existing_board": "mixed",
+      "deterministic_region": "essex",
+      "deterministic_board": "CSSE",
+      "sources": [
+        "english.json#english-065",
+        "essex.json#essex-english-026"
+      ]
+    },
+    {
+      "fingerprint": "0aff3af03ba8fc83e521f3ed1d5b25f4cb35a7f6d93785d942afba8d1818dca8",
+      "existing_region": "hertfordshire",
+      "existing_board": "GL",
+      "deterministic_region": "",
+      "deterministic_board": "GL",
+      "sources": [
+        "hertfordshire.json#herts-maths-021",
+        "lincolnshire.json#lincs-maths-021"
+      ]
+    },
+    {
+      "fingerprint": "b9e7da640ead3e088b35eb6674bd2b2eea2766b70a0ee5eb2ba69bf792612a0f",
+      "existing_region": "hertfordshire",
+      "existing_board": "GL",
+      "deterministic_region": "",
+      "deterministic_board": "GL",
+      "sources": [
+        "hertfordshire.json#herts-verbal-010",
+        "lincolnshire.json#lincs-verbal-010"
+      ]
+    },
+    {
+      "fingerprint": "f0f8e6dc732d67965014dce02919add07e5b245f84aed623939f1f99dffe5021",
+      "existing_region": "hertfordshire",
+      "existing_board": "GL",
+      "deterministic_region": "",
+      "deterministic_board": "GL",
+      "sources": [
+        "hertfordshire.json#herts-verbal-019",
+        "lincolnshire.json#lincs-verbal-016"
+      ]
+    },
+    {
+      "fingerprint": "c0f5841365fd08d157977ad778e014e57e88711af045d31937b5d4debe9e1325",
+      "existing_region": "hertfordshire",
+      "existing_board": "GL",
+      "deterministic_region": "",
+      "deterministic_board": "GL",
+      "sources": [
+        "hertfordshire.json#herts-verbal-020",
+        "lincolnshire.json#lincs-verbal-020"
+      ]
+    },
+    {
+      "fingerprint": "5565a1ab428ecae8eeab3f830a71c734f7f1b0aa70e66bb775d590021b2f183b",
+      "existing_region": "kent",
+      "existing_board": "GL",
+      "deterministic_region": "",
+      "deterministic_board": "GL",
+      "sources": [
+        "kent.json#kent-maths-001",
+        "manchester.json#manc-maths-001"
+      ]
+    },
+    {
+      "fingerprint": "e8e825a0285050f3898aed4fc5007f05edd8cfd65d148a96186f9199d2241243",
+      "existing_region": "kent",
+      "existing_board": "GL",
+      "deterministic_region": "",
+      "deterministic_board": "GL",
+      "sources": [
+        "kent.json#kent-maths-007",
+        "northern-ireland.json#ni-maths-005"
+      ]
+    }
+  ]
+}

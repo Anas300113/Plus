@@ -41,6 +41,7 @@ from src.core.database import (
 REVIEWABLE = ("discovered", "extracted", "ai_reviewed", "validation_required")
 APPROVED = "approved"
 REJECTED = "rejected"
+VALIDATED_REQUIRES_REVIEW = "validation_required"
 VERIFIED = "verified"
 CANDIDATE = "candidate"
 MISSING = "missing"
@@ -179,6 +180,12 @@ def set_status(session: Session, question_id: str, status: str,
         if blockers:
             raise ApprovalContractError(
                 "cannot approve; unmet requirements: " + "; ".join(blockers))
+    if row.status == status:
+        # Repeat request with the same decision: idempotent no-op. Re-logging
+        # would create duplicate audit events for a single real decision
+        # (foundation gate: "repeat requests do not create duplicate
+        # approvals or audit events").
+        return
     from_status = row.status
     row.status = status
     row.reviewer = reviewer
@@ -252,6 +259,27 @@ def verify_explanation(session: Session, question_id: str, reviewer: str,
     session.commit()
 
 
+def _downgrade_review_if_approved(session: Session, q: CanonicalQuestion,
+                                  reviewer: str) -> None:
+    """Verification was invalidated by an edit while the question was already
+    approved. Re-deposit it at ``validation_required`` so the student feed
+    can never serve a stale ``verified`` answer (Gate 3: no bypass)."""
+    from src.core.database import QuestionReviewStatus
+
+    row = session.query(QuestionReviewStatus).filter_by(
+        question_id=q.id).first()
+    if row is not None and row.status == APPROVED:
+        row.status = VALIDATED_REQUIRES_REVIEW
+        row.reviewer = reviewer
+        row.decision = VALIDATED_REQUIRES_REVIEW
+        row.reason = "reviewer edit invalidated the verified answer"
+        row.updated_at = _now()
+        _log_event(session, q.id, "status", reviewer,
+                   from_status=APPROVED,
+                   to_status=VALIDATED_REQUIRES_REVIEW,
+                   reason=row.reason)
+
+
 def edit_question(session: Session, question_id: str, reviewer: str,
                   question_text: str | None = None,
                   correct_answer: str | None = None,
@@ -276,16 +304,19 @@ def edit_question(session: Session, question_id: str, reviewer: str,
         q.correct_answer = correct_answer
         if q.answer_status == VERIFIED:
             q.answer_status = CANDIDATE  # edit invalidates verification
+            _downgrade_review_if_approved(session, q, reviewer)
     if explanation is not None and explanation != q.explanation:
         notes.append(f"explanation was {q.explanation!r}")
         q.explanation = explanation
         if q.explanation_status == VERIFIED:
             q.explanation_status = CANDIDATE
+            _downgrade_review_if_approved(session, q, reviewer)
     if options_json is not None and options_json != q.options_json:
         notes.append(f"options_json was {q.options_json!r}")
         q.options_json = options_json
         if q.answer_status == VERIFIED:
             q.answer_status = CANDIDATE  # option->answer mapping may be stale
+            _downgrade_review_if_approved(session, q, reviewer)
     q.updated_at = _now()
     # Atomic (P1-5): edited fields + audit event in ONE commit. The original
     # code committed, logged, then committed again, leaving a partial edit

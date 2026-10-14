@@ -471,8 +471,16 @@ def test_review_state_and_audit_persist_after_session_close(tmp_path,
 
 def test_audit_events_are_exactly_one_per_decision(session):
     """Regression (P1-6): set_status() once wrote the audit event twice
-    (a duplicate _log_event call). Each decision/verification/edit must append
-    EXACTLY one event. Seed with a bare question so counts start at zero."""
+    (a duplicate _log_event call). Each *distinct* decision/verification/edit
+    must append EXACTLY one event. Seed with a bare question so counts start
+    at zero.
+
+    Idempotency (Gate 3.6): a *repeat* of the same decision is a no-op and
+    appends NO new event -- an audit event records a real state change, not a
+    redundant re-request. Repeat idempotency is covered exhaustively in
+    tests/test_review_integrity_gate3.py; here we only assert that the
+    distinct-operation accounting (one event each, never two) still holds.
+    """
     qid = _mcq(session, provenance=True)   # no verification yet: 0 events
 
     def _count():
@@ -483,14 +491,14 @@ def test_audit_events_are_exactly_one_per_decision(session):
     set_status(session, qid, "rejected", reviewer="alice", reason="dupe")
     assert _count() == 1                     # not 2 (the P1-6 regression)
     set_status(session, qid, "rejected", reviewer="bob", reason="again")
-    assert _count() == 2
+    assert _count() == 1                     # repeat decision: idempotent no-op
     verify_answer(session, qid, "bob", evidence="ksol p.3, key B, checked")
-    assert _count() == 3
+    assert _count() == 2
     verify_explanation(session, qid, "bob",
                        note="worked solution checked against ksol p.1")
-    assert _count() == 4
+    assert _count() == 3
     edit_question(session, qid, "bob", question_text="changed stem")
-    assert _count() == 5
+    assert _count() == 4
 
 
 # ---- P1-4: verification requires meaningful, inspectable evidence ----------
