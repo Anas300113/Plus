@@ -79,11 +79,46 @@ def ensure_schema(engine) -> list[str]:
     else:
         _ensure_migration_table_exists(engine)
     applied.extend(_reconcile_fabricated_page_ids(engine))
+    applied.extend(_record_new_tables(engine))
+    return applied
+
+
+def _record_new_tables(engine) -> list[str]:
+    """Record creation of additive tables (question_region_board,
+    corpus_snapshot) in schema_migrations for audit/idempotency.
+
+    The tables themselves are created by Base.metadata.create_all in
+    ensure_schema; this function only records that they exist so a
+    re-run is a no-op.
+    """
+    insp = inspect(engine)
+    if not insp.has_table("schema_migrations"):
+        return []
+    applied: list[str] = []
+    for table_name, migration_id in (
+        ("question_region_board", _QUESTION_REGION_BOARD_ID),
+        ("corpus_snapshot", _CORPUS_SNAPSHOT_ID),
+    ):
+        if not insp.has_table(table_name):
+            continue
+        with engine.begin() as conn:
+            already = {row[0] for row in conn.exec_driver_sql(
+                f"SELECT id FROM {_MIGRATION_TABLE}").fetchall()}
+            if migration_id in already:
+                continue
+            conn.exec_driver_sql(
+                f"INSERT OR IGNORE INTO {_MIGRATION_TABLE} VALUES (?, ?)",
+                (migration_id, utcnow().isoformat()))
+            applied.append(migration_id)
     return applied
 
 
 _DATA_PAGE_PROVENANCE_ID = (
     f"{SCHEMA_VERSION}:data:page_provenance_reconciliation")
+_QUESTION_REGION_BOARD_ID = (
+    f"{SCHEMA_VERSION}:create_table:question_region_board")
+_CORPUS_SNAPSHOT_ID = (
+    f"{SCHEMA_VERSION}:create_table:corpus_snapshot")
 
 
 def _reconcile_fabricated_page_ids(engine) -> list[str]:

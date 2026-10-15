@@ -132,16 +132,18 @@ def test_manifest_records_source_and_outcomes(session, tmp_path):
     stats = import_banks(tmp_path, session, batch="test-batch")
     args = Namespace(source_sha="d970c16614c95140", batch="test-batch")
     _write_manifests(tmp_path / "m",
-                     {"11plus-prep": stats}, args)
+                     {"11plus-prep": stats}, args, run_id=None)
     man = json.loads(
-        (tmp_path / "m" / "11plus-prep-d970c16614c9.json").read_text(
-            encoding="utf-8"))
+        (tmp_path / "m" / "11plus-prep-d970c16614c9-unknown.json")
+        .read_text(encoding="utf-8"))
     assert man["source_sha"] == "d970c16614c95140"
     assert "SahirVhora/11plus-prep" in man["source_repo"]
     assert "MIT License" in man["licence"]
+    assert man["run_id"] is None
     assert man["totals"]["records"] == 2
     assert man["totals"]["imported"] == 1
     assert man["totals"]["invalid"] == 1
+    assert man["totals"]["board_conflicts"] == 0
     assert man["files"][0]["sha256"]
 
 

@@ -75,9 +75,14 @@ def test_migrations_are_recorded_for_audit(tmp_path):
     assert all(m.startswith(SCHEMA_VERSION) for m in recorded)
 
 
-def test_fresh_database_needs_no_migration(tmp_path):
+def test_fresh_database_needs_no_column_migration(tmp_path):
+    """A fresh DB needs no ALTER COLUMN migrations (all columns exist from
+    create_all). New additive tables are still recorded for audit."""
     engine = get_engine(f"sqlite:///{tmp_path / 'fresh.db'}")
-    assert ensure_schema(engine) == []
+    applied = ensure_schema(engine)
+    # New tables are recorded; no column ALTER migrations.
+    assert all("question_region_board" in m or "corpus_snapshot" in m
+               for m in applied)
     assert ensure_schema(engine) == []
 
 
@@ -140,6 +145,11 @@ def test_base_metadata_still_creates_everything(tmp_path):
     """The create_all path used by tests stays valid alongside ensure_schema."""
     engine = get_engine(f"sqlite:///{tmp_path / 'all.db'}")
     Base.metadata.create_all(bind=engine)
+    applied = ensure_schema(engine)
+    # New tables already created by create_all; only their migration
+    # records are applied (idempotent on re-run).
+    assert all("question_region_board" in m or "corpus_snapshot" in m
+               for m in applied)
     assert ensure_schema(engine) == []
 
 

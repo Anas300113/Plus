@@ -4,7 +4,7 @@ curriculum_* (lessons), assessment_* (exams), learning_* (students),
 ai_* (AI jobs/outputs). Never collapse these into one table."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import (
     JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text,
@@ -18,7 +18,10 @@ class Base(DeclarativeBase):
 
 
 def utcnow() -> datetime:
-    return datetime.utcnow()
+    # datetime.now(timezone.utc) avoids the datetime.utcnow() deprecation
+    # (py3.12+). .replace(tzinfo=None) keeps the return naive so existing
+    # offset-naive stored datetimes and subtractions keep working.
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 # ---------------- SOURCE domain ----------------
@@ -152,6 +155,55 @@ class CanonicalQuestion(Base):
     fingerprint: Mapped[str] = mapped_column(String, default="", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class QuestionRegionBoard(Base):
+    """Normalised canonical ↔ region/board association.
+
+    Each source record's region/board assertion is preserved individually
+    instead of being collapsed to a single canonical value. Conflicting
+    assertions across sources are flagged, not silently discarded.
+    """
+    __tablename__ = "question_region_board"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    question_id: Mapped[str] = mapped_column(
+        String, ForeignKey("canonical_questions.id"), index=True,
+        nullable=False)
+    region: Mapped[str] = mapped_column(String, default="", server_default="")
+    board: Mapped[str] = mapped_column(String, default="", server_default="")
+    source_document_id: Mapped[str] = mapped_column(
+        String, ForeignKey("source_documents.id"), index=True, nullable=True)
+    source_question_id: Mapped[str] = mapped_column(
+        String, default="", server_default="")
+    confidence: Mapped[float] = mapped_column(Float, default=1.0)
+    ingestion_batch: Mapped[str] = mapped_column(String, default="",
+                                                 server_default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("question_id", "source_document_id",
+                         "source_question_id",
+                         name="uq_question_region_board_source"),
+    )
+
+
+class CorpusSnapshot(Base):
+    """Cumulative corpus snapshot taken after each ingestion run.
+
+    Immutable per-run record of whole-corpus state: total questions,
+    occurrences, approved counts, and per-source breakdown. Enables
+    incremental runs to reconcile against whole-corpus state (Gate 3).
+    """
+    __tablename__ = "corpus_snapshots"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    snapshot_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    total_questions: Mapped[int] = mapped_column(Integer, default=0)
+    total_occurrences: Mapped[int] = mapped_column(Integer, default=0)
+    total_approved: Mapped[int] = mapped_column(Integer, default=0)
+    total_pending_review: Mapped[int] = mapped_column(Integer, default=0)
+    per_source_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    run_id: Mapped[str] = mapped_column(
+        String, ForeignKey("pipeline_runs.id"), index=True, nullable=True)
 
 
 class QuestionReviewStatus(Base):
@@ -535,6 +587,8 @@ class PipelineRun(Base):
     error_message: Mapped[str] = mapped_column(Text, default="")
     stats_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True,
+                                                          default=None)
 
 
 def get_engine(url: str):
