@@ -53,33 +53,74 @@ def _pending_columns(engine) -> list[tuple[str, str]]:
 
 
 def ensure_schema(engine) -> list[str]:
-    """Create tables, add missing columns, return newly applied migration ids.
+    """Create tables, add missing columns, reconcile data; return applied ids.
 
     Idempotent: calling repeatedly applies nothing and returns ``[]``.
     """
     Base.metadata.create_all(bind=engine)
-    pending = _pending_columns(engine)
-    if not pending:
-        _ensure_migration_table_exists(engine)
-        return []
-
-    tables = {t.name: t for t in Base.metadata.sorted_tables}
     applied: list[str] = []
-    touched = {t for t, _ in pending}
+    pending = _pending_columns(engine)
+    if pending:
+        tables = {t.name: t for t in Base.metadata.sorted_tables}
+        touched = {t for t, _ in pending}
+        with engine.begin() as conn:
+            _ensure_migration_table(conn)
+            for table_name, column_name in pending:
+                column = tables[table_name].columns[column_name]
+                ddl = str(CreateColumn(column).compile(dialect=engine.dialect))
+                conn.exec_driver_sql(
+                    f'ALTER TABLE "{table_name}" ADD COLUMN {ddl}')
+                migration_id = f"{SCHEMA_VERSION}:{table_name}.{column_name}"
+                conn.exec_driver_sql(
+                    f"INSERT OR IGNORE INTO {_MIGRATION_TABLE} VALUES (?, ?)",
+                    (migration_id, utcnow().isoformat()))
+                applied.append(migration_id)
+        _create_missing_indexes(engine, touched, applied)
+    else:
+        _ensure_migration_table_exists(engine)
+    applied.extend(_reconcile_fabricated_page_ids(engine))
+    return applied
+
+
+_DATA_PAGE_PROVENANCE_ID = (
+    f"{SCHEMA_VERSION}:data:page_provenance_reconciliation")
+
+
+def _reconcile_fabricated_page_ids(engine) -> list[str]:
+    """Clear fabricated page provenance (Gate 1).
+
+    Legacy reference-import rows stored the *document* id in
+    ``question_occurrences.page_id`` -- a dangling pointer into the
+    ``source_pages`` foreign key that falsely claimed page granularity. Provenance
+    must reference a real page row, so those values are cleared to ``""`` (the
+    file-level sentinel). The honest file+record provenance lives in
+    ``document_id`` + ``question_number`` and is left untouched, so imported
+    questions keep verifiable file-level provenance rather than losing it.
+
+    Only rows whose ``page_id`` equals their ``document_id`` AND does not match
+    any real ``source_pages.id`` are touched. Idempotent, recorded for audit,
+    and a no-op (``[]``) on a database with no fabricated rows.
+    """
+    insp = inspect(engine)
+    if not insp.has_table("question_occurrences"):
+        return []
     with engine.begin() as conn:
         _ensure_migration_table(conn)
-        for table_name, column_name in pending:
-            column = tables[table_name].columns[column_name]
-            ddl = str(CreateColumn(column).compile(dialect=engine.dialect))
-            conn.exec_driver_sql(
-                f'ALTER TABLE "{table_name}" ADD COLUMN {ddl}')
-            migration_id = f"{SCHEMA_VERSION}:{table_name}.{column_name}"
-            conn.exec_driver_sql(
-                f"INSERT OR IGNORE INTO {_MIGRATION_TABLE} VALUES (?, ?)",
-                (migration_id, utcnow().isoformat()))
-            applied.append(migration_id)
-    _create_missing_indexes(engine, touched, applied)
-    return applied
+        already = {row[0] for row in conn.exec_driver_sql(
+            f"SELECT id FROM {_MIGRATION_TABLE}").fetchall()}
+        if _DATA_PAGE_PROVENANCE_ID in already:
+            return []
+        result = conn.exec_driver_sql(
+            "UPDATE question_occurrences SET page_id = '' "
+            "WHERE page_id <> '' AND page_id = document_id "
+            "AND page_id NOT IN (SELECT id FROM source_pages)")
+        changed = result.rowcount
+        if not changed:
+            return []  # nothing to fix; do not record a no-op migration
+        conn.exec_driver_sql(
+            f"INSERT OR IGNORE INTO {_MIGRATION_TABLE} VALUES (?, ?)",
+            (_DATA_PAGE_PROVENANCE_ID, utcnow().isoformat()))
+    return [_DATA_PAGE_PROVENANCE_ID]
 
 
 def _create_missing_indexes(engine, table_names: set[str],

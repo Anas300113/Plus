@@ -141,3 +141,75 @@ def test_base_metadata_still_creates_everything(tmp_path):
     engine = get_engine(f"sqlite:///{tmp_path / 'all.db'}")
     Base.metadata.create_all(bind=engine)
     assert ensure_schema(engine) == []
+
+
+# ---- Gate 1: fabricated page-provenance reconciliation ---------------------
+
+def _occurrence_engine(db_file):
+    """A DB with the occurrences table + a real source_page row, no other
+    learning tables needed."""
+    engine = get_engine(f"sqlite:///{db_file}")
+    Base.metadata.create_all(bind=engine)
+    return engine
+
+
+def test_fabricated_page_ids_are_cleared_and_real_ones_kept(tmp_path):
+    """Legacy reference-import rows stored the document id in page_id (a
+    fabricated page pointer). The reconciliation must clear exactly those to
+    '' while preserving genuine page-backed occurrences and file+record
+    provenance (document_id + question_number untouched)."""
+    import uuid as _uuid
+    from src.core.database import (
+        QuestionOccurrence, SourceDocument, SourcePage,
+    )
+    db_file = str(tmp_path / "fab.db")
+    engine = _occurrence_engine(db_file)
+    S = get_session_factory(engine)
+    s = S()
+    doc = SourceDocument(
+        id=str(_uuid.uuid4()), repo_name="r", repo_url="", source_path="b.json",
+        file_sha256="0" * 64, file_size=1, file_type="json")
+    s.add(doc)
+    s.flush()
+    page = SourcePage(
+        id=str(_uuid.uuid4()), document_id=doc.id, page_number=1,
+        text_content="real page")
+    s.add(page)
+    s.flush()
+    # Fabricated occurrence: page_id = document_id (no such source_page row).
+    s.add(QuestionOccurrence(
+        id=str(_uuid.uuid4()), canonical_question_id="q-fab",
+        document_id=doc.id, page_id=doc.id, question_number="rec-1"))
+    # Genuine occurrence: page_id = a real source_page id.
+    s.add(QuestionOccurrence(
+        id=str(_uuid.uuid4()), canonical_question_id="q-real",
+        document_id=doc.id, page_id=page.id, question_number="rec-2"))
+    s.commit()
+
+    applied = ensure_schema(engine)
+    assert any("page_provenance_reconciliation" in m for m in applied)
+
+    s.expire_all()
+    fab = s.query(QuestionOccurrence).filter_by(
+        canonical_question_id="q-fab").one()
+    real = s.query(QuestionOccurrence).filter_by(
+        canonical_question_id="q-real").one()
+    # Fabricated pointer cleared to the file-level sentinel...
+    assert fab.page_id == ""
+    # ...but its honest file+record provenance is intact.
+    assert fab.document_id == doc.id and fab.question_number == "rec-1"
+    # The genuine page-backed occurrence is untouched.
+    assert real.page_id == page.id
+    # Idempotent: a second run clears nothing and records nothing new.
+    assert ensure_schema(engine) == []
+    s.close()
+
+
+def test_reconciliation_is_noop_when_no_fabricated_rows(tmp_path):
+    """A clean DB (no fabricated page ids) must not record the reconciliation
+    migration, so ensure_schema still reports no changes."""
+    db_file = str(tmp_path / "clean.db")
+    engine = _occurrence_engine(db_file)
+    applied = ensure_schema(engine)
+    assert not any("page_provenance_reconciliation" in m for m in applied)
+    assert ensure_schema(engine) == []

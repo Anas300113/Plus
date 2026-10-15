@@ -457,7 +457,9 @@ def review_detail(question_id: str, db: Session = Depends(get_db),
                   _token: str = Depends(require_reviewer)):
     """Reviewer workbench: the stored question, its provenance, verification
     states, extraction warnings and the precise unmet approval requirements."""
-    from src.pipeline.review import approval_blockers, has_provenance
+    from src.pipeline.review import (
+        approval_blockers, has_provenance, provenance_level,
+    )
     from src.core.database import QuestionOccurrence, QuestionReviewEvent
     q = db.query(CanonicalQuestion).filter_by(id=question_id).first()
     if q is None:
@@ -500,6 +502,7 @@ def review_detail(question_id: str, db: Session = Depends(get_db),
         "review_status": (status.status if status else None),
         "reviewer": (status.reviewer if status else ""),
         "has_provenance": has_provenance(db, question_id),
+        "provenance_level": provenance_level(db, question_id),
         "provenance": provenance,
         "approval_blockers": approval_blockers(db, question_id),
         "review_history": [{

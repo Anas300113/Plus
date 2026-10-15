@@ -35,7 +35,7 @@ from sqlalchemy.orm import Session
 
 from src.core.database import (
     CanonicalQuestion, QuestionOccurrence, QuestionReviewEvent,
-    QuestionReviewStatus,
+    QuestionReviewStatus, SourceDocument, SourcePage,
 )
 
 REVIEWABLE = ("discovered", "extracted", "ai_reviewed", "validation_required")
@@ -92,12 +92,58 @@ def _occurrences(session: Session, question_id: str):
             .filter_by(canonical_question_id=question_id).all())
 
 
+def provenance_level(session: Session, question_id: str) -> str:
+    """Resolve how well a question's source location can actually be trusted.
+
+    Returns one of:
+
+    * ``"page"`` -- an occurrence pins a document AND a page id that resolves
+      to a real ``SourcePage`` row belonging to that same document. This is
+      page-level provenance from the PDF/OCR pipeline.
+    * ``"file"`` -- no resolvable page, but an occurrence pins a real
+      ``SourceDocument`` AND a non-empty source record id (``question_number``).
+      This is honest file-and-record provenance for structured JSON banks,
+      which are ingested per file and deliberately carry no page rows.
+    * ``"none"`` -- no occurrence offers either. A populated ``page_id`` that
+      does NOT resolve to a real ``SourcePage`` (e.g. the historical
+      fabrication that stored the *document* id in the page column) never
+      counts as provenance.
+
+    Ids are only trusted when the row they reference actually exists; being
+    populated is never sufficient.
+    """
+    occs = _occurrences(session, question_id)
+    doc_ids = {o.document_id for o in occs if o.document_id}
+    page_ids = {o.page_id for o in occs if o.page_id}
+    real_page_doc: dict[str, str] = {}
+    if page_ids:
+        for p in session.query(SourcePage).filter(SourcePage.id.in_(page_ids)):
+            real_page_doc[p.id] = p.document_id
+    real_docs: set[str] = set()
+    if doc_ids:
+        real_docs = {d.id for d in session.query(SourceDocument)
+                     .filter(SourceDocument.id.in_(doc_ids))}
+    # Page-level: a page id that resolves to a real page of the same document.
+    for o in occs:
+        if (o.page_id and o.page_id in real_page_doc
+                and real_page_doc[o.page_id] == o.document_id
+                and o.document_id in real_docs):
+            return "page"
+    # File-level: a real document plus a non-empty source record id.
+    for o in occs:
+        if (o.document_id and o.document_id in real_docs
+                and (o.question_number or "").strip()):
+            return "file"
+    return "none"
+
+
 def has_provenance(session: Session, question_id: str) -> bool:
-    """True when at least one occurrence pins a document AND a page."""
-    for occ in _occurrences(session, question_id):
-        if occ.document_id and occ.page_id:
-            return True
-    return False
+    """True when a question has verifiable page- or file-level provenance.
+
+    A populated id is not enough: the referenced ``SourcePage`` /
+    ``SourceDocument`` row must actually exist.
+    """
+    return provenance_level(session, question_id) != "none"
 
 
 def _looks_mcq(question: CanonicalQuestion) -> bool:
@@ -132,7 +178,8 @@ def approval_blockers(session: Session, question_id: str) -> list[str]:
     if not (q.question_text or "").strip():
         blockers.append("question_text is empty")
     if not has_provenance(session, question_id):
-        blockers.append("no occurrence with document+page provenance")
+        blockers.append(
+            "no occurrence with verifiable page- or file-level provenance")
     if _looks_mcq(q):
         labels = option_labels(q)
         option_items = q.options_json or []

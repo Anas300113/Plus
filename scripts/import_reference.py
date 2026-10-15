@@ -95,7 +95,7 @@ def import_file(session, path: Path, adapter, repo_name: str, repo_url: str,
         session.flush()
         session.add(QuestionOccurrence(
             id=str(uuid.uuid4()), canonical_question_id=q.id,
-            document_id=doc.id, page_id=doc.id,
+            document_id=doc.id, page_id="",
             question_number=canon.get("source_question_id", ""),
             extraction_run=batch, extraction_version="adapter-0.1.0",
             extraction_confidence=0.8))
@@ -218,7 +218,7 @@ def _write_clusters(session, clusters: dict, per_file: dict, invalid: int,
             if exists is None:
                 session.add(QuestionOccurrence(
                     id=str(uuid.uuid4()), canonical_question_id=q.id,
-                    document_id=m["doc"].id, page_id=m["doc"].id,
+                    document_id=m["doc"].id, page_id="",
                     question_number=m["source_id"],
                     extraction_run=batch,
                     extraction_version="adapter-0.2.0",

@@ -50,13 +50,13 @@ def _make_approvable(session, answer_evidence="ksol 11Comprehension p.3, key B",
         source=f"gate3-dbg:{doc.id}", confidence=1.0)
     session.add(row)
     session.flush()
-    # Every source record keeps its own occurrence (document + page
-    # provenance). This origin schema deliberately mirrors ingestion: page_id
-    # references the document row because source pages for reference
-    # documents are not extracted by this pipeline.
+    # Every source record keeps its own occurrence. Reference documents are
+    # ingested as whole files (no page extraction), so the occurrence carries
+    # honest file-level provenance: a real document id + source record id, and
+    # an empty page id. It never fabricates a page id from the document id.
     session.add(QuestionOccurrence(
         id=str(uuid.uuid4()), canonical_question_id=q.id,
-        document_id=doc.id, page_id=doc.id, question_number=q.id,
+        document_id=doc.id, page_id=page.id, question_number=q.id,
         extraction_run="gate3", extraction_version="adapter-0.2.0",
         extraction_confidence=1.0))
     session.flush()
