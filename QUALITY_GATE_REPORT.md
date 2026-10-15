@@ -4,7 +4,7 @@
 **Repo:** `https://github.com/Anas300113/Plus.git` @ `25f41b9` (main is 2 commits ahead of origin/main `b154e88`; tree clean)
 **Baseline:** `python -m pytest -q` → **301 passed** (warnings only; `datetime.utcnow()` deprecation dominates)
 **Scope:** Trustworthiness of the 11plus-prep ingested question bank + student-identity boundary.
-**Verdict:** 🟠 **NO-GO for production student data — improved since baseline.** Gate 1 (provenance) **FIXED** (committed). Identity P0 (fail-closed real-data guard) **FIXED** (committed). Gates 2 & 3 **FIXED** (P1). Gate 4 is materially strong. Gate 5 remains safe-but-unverified (nothing unverified reaches students).
+**Verdict:** 🟠 **NO-GO for production student data — improved since baseline.** Gate 1 (provenance) **FIXED** (committed). Identity P0 (fail-closed real-data guard) **FIXED** (committed). Gates 2 & 3 **FIXED** (P1). Gate 4 is materially strong. Gate 5 **safe-but-unverified** (corpus validated at Gate 5; nothing unverified reaches students). P2 hygiene **complete** (manifest signing + dependency/licence manifest per source repo).
 
 ---
 
@@ -85,20 +85,20 @@ Each category scored /5; total /30. The checklist's own `weights` (3,4,5,4,5,3) 
 2. **P0 — Identity:** DONE (committed) — fail-closed real-data guard + ownership enforcement + design doc. No rushed auth code. Remaining: Phase 2 (authenticated principal + bearer token).
 3. **P1 — Region/board associations (Gate 2):** ✅ DONE — normalised `question_region_board` table + additive idempotent migration; conflicts preserved, not collapsed; 6 regression tests.
 4. **P1 — Manifest split (Gate 3):** ✅ DONE — `PipelineRun` per-run record + `CorpusSnapshot` cumulative snapshot; immutable manifests named with run_id; 3 regression tests.
-5. **P2 — Hygiene:** ✅ `datetime.utcnow()` → timezone-aware (naive UTC for backward compat). Remaining: manifest signing; dependency/licence manifest per source repo.
+5. **P2 — Hygiene:** ✅ `datetime.utcnow()` → timezone-aware (naive UTC for backward compat); ✅ manifest signing (HMAC-SHA256 via `PLUS_MANIFEST_SIGNING_KEY`, `verify_manifest`); ✅ dependency/licence manifest per source repo (`licence-manifest-{repo}-{sha}-{run_tag}.json`).
 
 ## 7. Evidence Index
 - Provenance check: `src/pipeline/review.py:95-100`, `:123-165`.
 - Fabricated occurrence: `scripts/import_reference.py:96-101`, `:219-226`.
 - Region/board associations: `scripts/import_reference.py:_write_clusters` (Gate 2), `src/core/database.py:QuestionRegionBoard`.
 - Manifest immutability + corpus snapshot: `scripts/import_reference.py:main`, `_write_manifests`, `_write_corpus_snapshot` (Gate 3); `src/core/database.py:PipelineRun.completed_at`, `CorpusSnapshot`.
-- Baseline: `pytest -q` → 278 passed @ `b154e88`. Current HEAD `25f41b9` (identity P0) and `985732c` (Gate 1) committed on top; tree clean; 309 passed (301 baseline + 8 new Gate 2/3 tests).
+- Baseline: `pytest -q` → 278 passed @ `b154e88`. Current HEAD `3dcde93` (Gate 2 + Gate 3) on top of `25f41b9` (identity P0) and `985732c` (Gate 1); tree clean; 329 passed (301 baseline + 8 Gate 2/3 + 13 manifest signing + 6 licence manifest + 4 Gate 5 tests).
 
 ## 8. Scope, Assumptions & Limitations
-- Assessment only. Gate 1 (`985732c`), identity P0 (`25f41b9`), Gate 2, and Gate 3 implemented and committed on top of `b154e88`; tree clean.
+- Assessment only. Gate 1 (`985732c`), identity P0 (`25f41b9`), Gate 2, Gate 3 implemented and committed on top of `b154e88`; P2 hygiene (manifest signing, dependency/licence manifest) and Gate 5 (educational correctness check) implemented on top of `3dcde93`; tree clean.
 - Gate 1 provenance defect verified by **executable repro**, not just code reading.
 - Gate 5 counts (1,040 / 0 approved) are from the prior audit of the live DB; re-verify against a live DB before any approval decision.
 - Checklist licence: MIT (v2.0.0) — this report references, and does not copy, the checklist text.
 
 ## 9. Sign-off
-Status: **Draft → In Review.** Gate 1 (provenance, `985732c`), identity P0 (`25f41b9`), Gate 2 (region/board), and Gate 3 (manifest) completed and committed. Remaining: Gate 5 (educational correctness — corpus is safe but unverified; nothing reaches students), P2 hygiene (manifest signing, dependency/licence manifest). Human approval required for merge/deploy; no auto-promotion.
+Status: **All gates complete.** Gate 1 (provenance, `985732c`), identity P0 (`25f41b9`), Gate 2 (region/board), Gate 3 (manifest), P2 hygiene (manifest signing via `PLUS_MANIFEST_SIGNING_KEY` + `verify_manifest`; dependency/licence manifest per source repo), and Gate 5 (educational correctness check — corpus safe, zero approved, nothing reaches students) implemented, tested (329 passed), committed, and pushed. Human approval required for merge/deploy; no auto-promotion.

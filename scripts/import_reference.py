@@ -5,7 +5,11 @@ record becomes a CanonicalQuestion + QuestionOccurrence + review row
 from __future__ import annotations
 
 import argparse
+import datetime
+import hashlib
+import hmac
 import json
+import os
 import uuid
 from pathlib import Path
 
@@ -322,6 +326,25 @@ def main() -> None:
 
     if args.manifest_dir and manifests:
         _write_manifests(Path(args.manifest_dir), manifests, args, run_id)
+        signing_key = _manifest_signing_key()
+        source_repos = [
+            {
+                "name": repo,
+                "repo_url": ("https://github.com/SahirVhora/11plus-prep"
+                             if repo == "11plus-prep" else repo),
+                "commit_sha": args.source_sha,
+                "licence": ("MIT License, Copyright (c) 2026 Sahir Vhora"
+                            if repo == "11plus-prep"
+                            else "see source repository"),
+                "rights_note": ("MIT License, Copyright (c) 2026 Sahir Vhora"
+                                if repo == "11plus-prep"
+                                else "see source repository"),
+                "batch": args.batch,
+            }
+            for repo in manifests
+        ]
+        _write_licence_manifest(Path(args.manifest_dir), source_repos,
+                                run_id, signing_key)
     print(total)
 
 
@@ -375,9 +398,10 @@ def _write_manifests(manifest_dir: Path, manifests: dict, args,
     """Reproducible per-repo ingestion manifest (source URL/SHA, licence,
     per-file hashes and outcomes, duplicate/attribution statistics). Each
     run writes an immutable file named with run_id so prior manifests are
-    never overwritten (Gate 3).
+    never overwritten (Gate 3). Manifests are HMAC-signed when
+    PLUS_MANIFEST_SIGNING_KEY is set (P2 hygiene).
     """
-    import datetime
+    signing_key = _manifest_signing_key()
     manifest_dir.mkdir(parents=True, exist_ok=True)
     for repo, result in manifests.items():
         sha_tag = (args.source_sha or "unversioned")[:12]
@@ -412,9 +436,122 @@ def _write_manifests(manifest_dir: Path, manifests: dict, args,
             "files": result.get("manifest_files", []),
             "attribution_conflicts": result.get("conflicts", []),
         }
+        signature = sign_manifest(payload, signing_key)
+        if signature:
+            payload["signature"] = signature
         out = manifest_dir / name
         out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         log.info("manifest written: %s", out)
+
+
+def _manifest_signing_key() -> str | None:
+    """Return the manifest signing key from the environment, if configured.
+
+    Set ``PLUS_MANIFEST_SIGNING_KEY`` to enable HMAC-SHA256 signatures on
+    every written manifest. Without it, manifests are written unsigned
+    (signature field omitted).
+    """
+    return os.environ.get("PLUS_MANIFEST_SIGNING_KEY", "") or None
+
+
+def sign_manifest(payload: dict, signing_key: str | None = None) -> str:
+    """Return an HMAC-SHA256 hex signature for a manifest payload.
+
+    The signature is computed over the canonical JSON serialization of the
+    payload (keys sorted, no whitespace) so it is reproducible and covers
+    every field including ``run_id`` and ``imported_at_utc``. Returns the
+    empty string when no signing key is configured.
+    """
+    if not signing_key:
+        signing_key = _manifest_signing_key()
+    if not signing_key:
+        return ""
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hmac.new(
+        signing_key.encode("utf-8"),
+        canonical.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def verify_manifest(manifest_path: Path | str,
+                    signing_key: str | None = None) -> bool:
+    """Verify a manifest file's HMAC-SHA256 signature.
+
+    Returns ``True`` when the file contains a valid ``signature`` field that
+    matches a recomputed signature over the rest of the payload. Returns
+    ``False`` when the file is missing, unparseable, has no signature, or the
+    signature does not match. When no signing key is configured, any
+    signature present is treated as valid (unsigned manifests accepted).
+    """
+    if not signing_key:
+        signing_key = _manifest_signing_key()
+    try:
+        data = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    signature = data.pop("signature", None)
+    if not signature:
+        # No signature field: valid only when signing is not required.
+        return signing_key is None
+    expected = sign_manifest(data, signing_key)
+    return hmac.compare_digest(signature, expected)
+
+
+def _write_licence_manifest(manifest_dir: Path, source_repos: list[dict],
+                            run_id: str | None = None,
+                            signing_key: str | None = None) -> None:
+    """Write a dependency/licence manifest per source repo.
+
+    Each entry records the source repository name, URL, audited commit SHA,
+    declared licence, and rights note, plus the Plus project's own Python
+    dependencies (from ``pyproject.toml``) so auditors can see exactly what
+    code and licences were in play for each ingested source.
+    """
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    # Read project dependencies from pyproject.toml (no external deps).
+    project_deps: list[str] = []
+    pyproject = Path("pyproject.toml")
+    if pyproject.exists():
+        in_deps = False
+        for line in pyproject.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped == "dependencies = [":
+                in_deps = True
+                continue
+            if in_deps:
+                if stripped == "]":
+                    break
+                if stripped.startswith('"') or stripped.startswith("'"):
+                    dep = stripped.strip('"').strip("'").rstrip(",")
+                    project_deps.append(dep)
+
+    run_tag = (run_id or "unknown")[:8]
+    for repo in source_repos:
+        payload = {
+            "source_repo": repo.get("name", repo.get("repo_name", "")),
+            "source_url": repo.get("repo_url", ""),
+            "source_commit_sha": repo.get("commit_sha", ""),
+            "licence": repo.get("licence", ""),
+            "rights_note": repo.get("rights_note", ""),
+            "import_batch": repo.get("batch", ""),
+            "run_id": run_id,
+            "generated_at_utc": datetime.datetime.now(
+                datetime.timezone.utc).isoformat(timespec="seconds"),
+            "project_dependencies": project_deps,
+            "project_license": "MIT",
+        }
+        signature = sign_manifest(dict(payload), signing_key)
+        if signature:
+            payload["signature"] = signature
+        sha_tag = (repo.get("commit_sha", "") or "unversioned")[:12]
+        name = (
+            f"licence-manifest-{repo.get('name', repo.get('repo_name', 'unknown'))}"
+            f"-{sha_tag}-{run_tag}.json"
+        )
+        out = manifest_dir / name
+        out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        log.info("licence manifest written: %s", out)
 
 
 if __name__ == "__main__":

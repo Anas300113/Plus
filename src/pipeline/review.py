@@ -371,3 +371,66 @@ def edit_question(session: Session, question_id: str, reviewer: str,
     _log_event(session, question_id, "edit", reviewer,
                reason="; ".join(notes) if notes else "no-op")
     session.commit()
+
+
+# ---- Gate 5: educational correctness ---------------------------------------
+
+def gate5_educational_correctness_check(session: Session) -> dict:
+    """Gate 5: educational-correctness readiness for the question corpus.
+
+    The ingested corpus is *safe* (nothing unverified reaches students -- see
+    Gate 4 / ``tests/test_unapproved_exposure.py``) but it is *not*
+    human-reviewed at scale. Before any question can be served to students,
+    every imported question must still carry ``validation_required`` (or
+    another non-approved review status) and zero questions may be approved.
+    Bulk approval is explicitly forbidden; each question needs individual
+    human sign-off.
+
+    Returns a report dict:
+      total_questions        -- all canonical questions
+      approved_questions     -- questions with status == \"approved\"
+      pending_review_questions -- questions awaiting review
+      gate5_safe             -- True when approved_questions == 0
+      per_source             -- breakdown by source repo (licence/attribution)
+    """
+    from sqlalchemy import func
+
+    from src.core.database import (  # noqa: PLC0415
+        CanonicalQuestion, QuestionReviewStatus, SourceDocument,
+    )
+
+    total_questions = (
+        session.query(func.count(CanonicalQuestion.id)).scalar() or 0)
+    approved_questions = (
+        session.query(func.count(QuestionReviewStatus.question_id))
+        .filter(QuestionReviewStatus.status == "approved")
+        .scalar() or 0)
+    pending_review_questions = (
+        session.query(func.count(QuestionReviewStatus.question_id))
+        .filter(QuestionReviewStatus.status != "approved")
+        .scalar() or 0)
+
+    per_source: dict[str, dict] = {}
+    rows = (
+        session.query(
+            SourceDocument.repo_name,
+            func.count(CanonicalQuestion.id).label("q_count"),
+        )
+        .outerjoin(QuestionOccurrence,
+                   QuestionOccurrence.document_id == SourceDocument.id)
+        .outerjoin(CanonicalQuestion,
+                   CanonicalQuestion.id == QuestionOccurrence.canonical_question_id)
+        .group_by(SourceDocument.repo_name)
+        .all())
+    for repo, q_count in rows:
+        per_source[repo or "unknown"] = {"questions": q_count or 0}
+
+    gate5_safe = approved_questions == 0
+
+    return {
+        "total_questions": total_questions,
+        "approved_questions": approved_questions,
+        "pending_review_questions": pending_review_questions,
+        "gate5_safe": gate5_safe,
+        "per_source": per_source,
+    }
