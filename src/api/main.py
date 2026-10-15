@@ -119,9 +119,43 @@ def student_identity_required() -> bool:
         "1", "true", "yes", "on")
 
 
+# Real-data mode (P0-5). The X-Student-Id header is caller-supplied and the
+# platform has no server-trusted student principal, so the ownership guard
+# above can be satisfied by echoing the victim's id. That is tolerable only
+# while the API holds synthetic/dev data. The moment it holds REAL student
+# data, serving per-student reads/writes behind a spoofable header is an
+# ownership hole, and the honest posture -- mirroring require_reviewer's
+# fail-closed 503 -- is to refuse rather than silently expose it.
+# Set PLUS_REAL_STUDENT_DATA=1 to declare "this deployment holds real student
+# data". Student-scoped routes then return 503 until a genuine server-verified
+# identity (signed session/bearer token) is wired in; the full remediation
+# design is docs/ADR-002-student-identity.md. This does NOT implement
+# authentication -- it makes the absence of authentication loud instead of
+# silently insecure.
+REAL_STUDENT_DATA_ENV = "PLUS_REAL_STUDENT_DATA"
+
+
+def real_student_data_mode() -> bool:
+    return os.environ.get(REAL_STUDENT_DATA_ENV, "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _refuse_if_real_data(resource: str) -> None:
+    """Fail closed on student-scoped routes when the deployment declares it
+    holds real student data and no server-verified identity exists yet."""
+    if real_student_data_mode():
+        raise HTTPException(
+            503,
+            f"student data for {resource} is locked: this deployment holds "
+            "real student data but no server-verified student identity is "
+            "configured. Set a signed session/bearer identity (see "
+            "docs/ADR-002-student-identity.md) before exposing student data.")
+
+
 def _enforce_student_id(claimed: str | None, owner: str, resource: str) -> None:
     """Fail closed (only when identity enforcement is on): the claimed student
     must equal the resource's owning student id."""
+    _refuse_if_real_data(resource)
     if not student_identity_required():
         return
     if not claimed:
@@ -135,6 +169,7 @@ def _enforce_session_owner(db: Session, session_id: str,
                            claimed: str | None) -> None:
     """Enforce that ``claimed`` owns the session ``session_id`` (owner is read
     from the stored session, never from the URL)."""
+    _refuse_if_real_data("this session")
     if not student_identity_required():
         return
     from src.core.database import LearningStudySession

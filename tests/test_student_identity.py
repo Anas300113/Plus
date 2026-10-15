@@ -212,3 +212,81 @@ def test_creating_a_session_for_another_student_is_blocked(env, monkeypatch):
                headers={"X-Student-Id": "me"})
     assert r.status_code == 200 and r.json()["session_id"]
 
+
+
+# ---- Real-data mode: fail closed (P0-5 Phase 1) ----------------------------
+# PLUS_REAL_STUDENT_DATA declares "this deployment holds real student data".
+# Because no server-verified student identity exists, student-scoped routes
+# must then refuse (503) rather than serve data behind the spoofable
+# X-Student-Id header. This mirrors require_reviewer's fail-closed 503. It does
+# NOT authenticate; it makes the absence of authentication loud.
+
+def _real(monkeypatch):
+    monkeypatch.setenv("PLUS_REAL_STUDENT_DATA", "1")
+
+
+@pytest.mark.parametrize("path", [
+    "/api/progress/s1",
+    "/api/statistics/s1",
+    "/api/reviews/s1",
+    "/api/recommendations/s1",
+    "/api/loop/s1",
+    "/api/parent/s1",
+])
+def test_real_data_mode_locks_student_reads(env, monkeypatch, path):
+    """In real-data mode a student-scoped GET is refused with 503 -- even when
+    the caller supplies a matching X-Student-Id, because that header proves
+    nothing."""
+    c, _ = env
+    _real(monkeypatch)
+    r = c.get(path, headers={"X-Student-Id": "s1"})
+    assert r.status_code == 503, path
+    # Also refused with no header at all (fail closed, not fail open).
+    assert c.get(path).status_code == 503, path
+
+
+def test_real_data_mode_locks_session_scoped_routes(env, monkeypatch):
+    """Session-scoped routes are locked too: create a session with the flag
+    OFF, then flip to real-data mode and confirm state/answer are refused."""
+    c, _ = env
+    sid = c.post("/api/sessions/start",
+                 json={"student_id": "s1"}).json()["session_id"]
+    _real(monkeypatch)
+    assert c.get(f"/api/sessions/{sid}",
+                 headers={"X-Student-Id": "s1"}).status_code == 503
+    assert c.post(f"/api/sessions/{sid}/answer",
+                  headers={"X-Student-Id": "s1"},
+                  json={"student_id": "s1", "session_id": sid,
+                        "question_id": "q", "chosen_answer": "B"}
+                  ).status_code == 503
+
+
+def test_real_data_mode_locks_attempts_write(env, monkeypatch):
+    """The attempts write path is locked in real-data mode."""
+    c, qid = env
+    sid = c.post("/api/sessions/start",
+                 json={"student_id": "s1"}).json()["session_id"]
+    _real(monkeypatch)
+    r = c.post("/api/attempts", headers={"X-Student-Id": "s1"},
+               json={"student_id": "s1", "session_id": sid,
+                     "question_id": qid, "chosen_answer": "B"})
+    assert r.status_code == 503
+
+
+def test_real_data_mode_is_independent_of_identity_flag(env, monkeypatch):
+    """Real-data mode locks routes even when PLUS_REQUIRE_STUDENT_IDENTITY is
+    OFF -- it is a separate, stronger control."""
+    c, _ = env
+    monkeypatch.delenv("PLUS_REQUIRE_STUDENT_IDENTITY", raising=False)
+    _real(monkeypatch)
+    assert c.get("/api/progress/s1").status_code == 503
+
+
+def test_real_data_mode_off_by_default_preserves_behaviour(env, monkeypatch):
+    """With PLUS_REAL_STUDENT_DATA unset (default) the endpoints behave exactly
+    as before, so the demo UI and frozen suite are unaffected."""
+    c, _ = env
+    monkeypatch.delenv("PLUS_REAL_STUDENT_DATA", raising=False)
+    assert c.get("/api/progress/s1").status_code == 200
+    assert c.get("/api/parent/s1").status_code == 200
+
