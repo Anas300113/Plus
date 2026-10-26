@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import uuid
-from pathlib import Path
 
 from src.core.database import (
     CanonicalQuestion, CorpusSnapshot, PipelineRun, QuestionOccurrence,
@@ -47,6 +46,26 @@ def _make_question(session, fp="fp-1", region="", board=""):
     return q
 
 
+def _write_bank(tmp_path):
+    bank_dir = tmp_path / "bank"
+    bank_dir.mkdir()
+    record = {
+        "id": "rec-1",
+        "subject": "maths",
+        "topic": "arithmetic",
+        "type": "mcq",
+        "question": "What is 2+2?",
+        "answer": "B",
+        "options": ["A) 3", "B) 4"],
+        "explanation": "2+2=4.",
+        "region": "birmingham",
+        "examBoard": "GL",
+    }
+    (bank_dir / "bank.json").write_text(
+        json.dumps([record]), encoding="utf-8")
+    return bank_dir
+
+
 def test_corpus_snapshot_captures_whole_corpus_state(session):
     """CorpusSnapshot records total questions, occurrences, approved,
     pending counts and per-source breakdown."""
@@ -82,22 +101,7 @@ def test_corpus_snapshot_captures_whole_corpus_state(session):
 def test_manifest_includes_run_id_and_is_immutable(session, tmp_path):
     """Manifest file name includes run_id so prior runs are never
     overwritten; payload includes run_id."""
-    d = _doc(session)
-    canon = {
-        "subject": "maths", "topic": "arithmetic",
-        "question_text": "What is 2+2?", "correct_answer": "B",
-        "options_json": [{"letter": "A", "text": "3"},
-                         {"letter": "B", "text": "4"}],
-        "region": "birmingham", "exam_board": "GL",
-        "source_question_id": "rec-1",
-    }
-    clusters = {
-        "fp-1": [{"canon": canon, "filename": "bank.json", "doc": d,
-                  "changed": False, "source_id": "rec-1"}],
-    }
-    per_file = {"bank.json": {"records": 1, "sha256": "0" * 64,
-                              "document_id": d.id, "upstream_changed": False}}
-    result = import_banks(session, Path("."), PrepAdapter(), "11plus-prep",
+    result = import_banks(session, _write_bank(tmp_path), PrepAdapter(), "11plus-prep",
                           "https://github.com/SahirVhora/11plus-prep",
                           "batch", "", run_id="run-123")
 
@@ -118,22 +122,7 @@ def test_manifest_includes_run_id_and_is_immutable(session, tmp_path):
 def test_manifest_differs_across_runs(session, tmp_path):
     """Two runs with different run_ids produce different manifest files
     (immutable per-run)."""
-    d = _doc(session)
-    canon = {
-        "subject": "maths", "topic": "arithmetic",
-        "question_text": "What is 2+2?", "correct_answer": "B",
-        "options_json": [{"letter": "A", "text": "3"},
-                         {"letter": "B", "text": "4"}],
-        "region": "birmingham", "exam_board": "GL",
-        "source_question_id": "rec-1",
-    }
-    clusters = {
-        "fp-1": [{"canon": canon, "filename": "bank.json", "doc": d,
-                  "changed": False, "source_id": "rec-1"}],
-    }
-    per_file = {"bank.json": {"records": 1, "sha256": "0" * 64,
-                              "document_id": d.id, "upstream_changed": False}}
-    result = import_banks(session, Path("."), PrepAdapter(), "11plus-prep",
+    result = import_banks(session, _write_bank(tmp_path), PrepAdapter(), "11plus-prep",
                           "https://github.com/SahirVhora/11plus-prep",
                           "batch", "", run_id="run-abc")
 
