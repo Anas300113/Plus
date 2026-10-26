@@ -12,3 +12,12 @@ dist/
 
 data/knowledge/
 *.joblib
+
+# Next.js application and local credentials
+.next/
+out/
+build/
+coverage/
+*.tsbuildinfo
+.env*
+!.env.example

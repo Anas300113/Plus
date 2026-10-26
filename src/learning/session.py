@@ -126,6 +126,7 @@ def start_session(db: Session, student_id: str, session_type: str = "practice",
                   planned_duration_seconds: int = 0,
                   goals: dict | None = None,
                   from_review_queue: bool = False,
+                  session_id: str | None = None,
                   ) -> LearningStudySession:
     """Create a session and freeze its question order.
 
@@ -135,6 +136,14 @@ def start_session(db: Session, student_id: str, session_type: str = "practice",
     """
     if session_type not in SESSION_TYPES:
         raise ValueError(f"unknown session type {session_type}")
+    if session_id:
+        existing = db.query(LearningStudySession).filter_by(id=session_id).first()
+        if existing:
+            if existing.student_id != student_id:
+                raise ValueError("session id is already owned by another learner")
+            if existing.session_type != session_type or (existing.goals_json or {}) != (goals or {}):
+                raise ValueError("session request id was reused with different details")
+            return existing
     ensure_student(db, student_id)
 
     if from_review_queue:
@@ -151,7 +160,7 @@ def start_session(db: Session, student_id: str, session_type: str = "practice",
             skill_id=skill_id, limit=limit)
 
     session = LearningStudySession(
-        id=str(uuid.uuid4()), student_id=student_id, session_type=session_type,
+        id=session_id or str(uuid.uuid4()), student_id=student_id, session_type=session_type,
         state=SessionState.STARTED.value,
         question_order_json=order_questions(selected, ordering, seed),
         current_index=0, planned_duration_seconds=planned_duration_seconds,
@@ -195,6 +204,7 @@ def question_payload(db: Session, question_id: str) -> dict:
         "difficulty": question.difficulty,
         "instructions": question.instructions, "context": question.context,
         "question_text": question.question_text,
+        "hint": question.hint or "",
         "options": question.options_json or [],
     }
 
@@ -284,7 +294,8 @@ def submit_answer(db: Session, session_id: str, question_id: str,
                   chosen_answer: str, time_taken_ms: int = 0,
                   hint_used: bool = False, action: str = "answer",
                   now: datetime | None = None,
-                  enforce_current: bool = True) -> dict:
+                  enforce_current: bool = True,
+                  attempt_id: str | None = None) -> dict:
     """Answer, skip or retry a question in a session.
 
     Educational loop position: PRACTISE -> ASSESS -> IDENTIFY ERROR ->
@@ -342,7 +353,7 @@ def submit_answer(db: Session, session_id: str, question_id: str,
         is_correct = False
 
     attempt = LearningQuestionAttempt(
-        id=str(uuid.uuid4()), student_id=session.student_id,
+        id=attempt_id or str(uuid.uuid4()), student_id=session.student_id,
         session_id=session_id, question_id=question_id,
         chosen_answer=chosen_answer, is_correct=is_correct,
         time_taken_ms=time_taken_ms, action=action,

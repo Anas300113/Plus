@@ -3,6 +3,25 @@
 Production-quality UK 11+ preparation platform: Maths, English,
 Verbal Reasoning, Non-Verbal Reasoning.
 
+## Plus11 web application
+
+The Next.js 16 frontend is integrated in `src/app`, `src/components`, and
+`src/lib`. It preserves PlusDash's responsive design, Framer Motion animations,
+learner flows and same-origin API-for-frontend routes. The frontend is the only
+public listener; its server-side BFF forwards verified Manus session tokens to
+the private FastAPI learner API at `/api/me/*`. Existing Plus ingestion,
+canonical-content, review, learning, statistics and legacy APIs are retained.
+
+For local web development, install Node.js 22, pnpm 11.25, and Python 3.12; run
+`pnpm install --frozen-lockfile`, `pnpm setup:python`, copy `.env.example` to
+`.env`, configure the server-only Manus OAuth values, then run `pnpm dev`. The
+supervisor binds FastAPI to loopback and runs Next.js on `PORT`. Before enabling
+production sign-in, configure `MANUS_PROJECT_ID`, `MANUS_JWT_SECRET`, the
+Manus OAuth portal/API URLs, and `PLUS11_AUTH_ALLOWED_ORIGINS` for the app's
+exact public HTTPS origin. Never expose secrets through `NEXT_PUBLIC_*`. See
+`PLUS11_INTEGRATION.md` for the combined runtime and database guidance.
+
+
 ## Architecture rule
 
 SOURCE MATERIAL, CANONICAL EDUCATIONAL CONTENT, STUDENT PERFORMANCE
@@ -122,8 +141,7 @@ verification and edit) are gated server-side by a shared token: set
 token is not configured, reviewer operations are locked (read: 503, mutate:
 503) rather than open, so answer keys and review history are never exposed to
 unauthorised callers. The token identifies the *shared reviewer credential*
-(recorded as a token hash), not an individual human — there is no user/identity
-provider yet. Approval requires: usable text, document+page provenance, valid
+(recorded as a token hash), not an individual reviewer. Approval requires: usable text, document+page provenance, valid
 ordered MCQ options whose label maps to the answer, a **verified** answer and a
 **verified** explanation (each with recorded, inspectable evidence). Every
 decision/edit is appended to an audit trail in the same commit as the change.
@@ -137,6 +155,7 @@ python scripts/build_fixtures.py
 python scripts/seed_taxonomy.py --db sqlite:///./elevenplus.db
 python scripts/spike_extract.py --source-root data/fixtures/spike --repo-name spike --batch spike-001 --db sqlite:///./elevenplus.db
 $env:PLUS_DATABASE_URL='sqlite:///./elevenplus.db'
+python -m src.core.migrate  # review target/migration behavior first
 python -m uvicorn src.api.main:app --port 8000
 ```
 
@@ -188,12 +207,11 @@ $env:PYTHONPATH='.'
 python -m pytest tests/
 ```
 
-**222 tests, all passing.**
+Backend and account-identity tests are isolated to temporary SQLite databases; run `python -m pytest tests/` to validate the current checkout.
 
-### Student data ownership (P1-13)
+### Student data ownership (P1-13, legacy routes)
 
-Student routes historically took a bare `student_id` (path/body) with no
-ownership check, so any caller who knew a student id could read or act on that
+Legacy student routes still take a bare `student_id` (path/body) and retain their historical ownership limitations; so any caller who knew a student id could read or act on that
 student's sessions, attempts, progress and parent dashboard. Set
 `PLUS_REQUIRE_STUDENT_IDENTITY=1` to enable an opt-in ownership boundary: a
 caller must then send an `X-Student-Id` header that equals the owning student
@@ -202,8 +220,9 @@ trusted from the URL); a mismatch is `403` and a missing header is `401`. When
 the flag is unset (the default) behaviour is unchanged so the stateless demo UI
 keeps working. Like the reviewer token, this is a thin shared-credential
 boundary pending a real identity provider — enabling it is necessary but **not
-sufficient** for production readiness, and it does not establish an
-authenticated individual identity. See `tests/test_student_identity.py`.
+sufficient** for production readiness. The new web app does not use these legacy routes for
+learner accounts: `/api/me/*` derives identity from a verified Manus bearer
+session, as covered by `tests/test_plus11_identity.py`.
 
 Phase 6 (learning layer) — `test_learning_session.py` (18),
 `test_review_items.py` (11), `test_statistics.py` (12),

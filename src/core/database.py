@@ -5,12 +5,20 @@ ai_* (AI jobs/outputs). Never collapse these into one table."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import os
+import ssl
 
 from sqlalchemy import (
-    JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text,
-    UniqueConstraint, create_engine,
+    JSON, Boolean, DateTime, Float, ForeignKey, Integer, String as SQLString, Text,
+    UniqueConstraint, create_engine, make_url,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+
+class String(SQLString):
+    """Default unspecified app strings to an indexed-safe MySQL VARCHAR."""
+    def __init__(self, length: int | None = 255, **kwargs):
+        super().__init__(255 if length is None else length, **kwargs)
+
 
 
 class Base(DeclarativeBase):
@@ -592,7 +600,23 @@ class PipelineRun(Base):
 
 
 def get_engine(url: str):
-    return create_engine(url, echo=False, future=True)
+    """Create an engine; require certificate-verified TLS for managed MySQL."""
+    parsed = make_url(url)
+    if parsed.drivername in ("mysql", "mysql+pymysql", "mariadb"):
+        query = dict(parsed.query)
+        ssl_requested = query.pop("ssl", None)
+        ssl_mode = query.pop("ssl-mode", query.pop("ssl_mode", None))
+        if str(ssl_requested).strip().lower() in {"0", "false", "off", "no"}:
+            raise ValueError("Managed MySQL connections require TLS.")
+        if str(ssl_mode).strip().lower() in {"disable", "disabled", "false"}:
+            raise ValueError("Managed MySQL connections require TLS.")
+        context = ssl.create_default_context(cafile=os.environ.get("PLUS_MYSQL_SSL_CA") or None)
+        context.verify_mode = ssl.CERT_REQUIRED
+        context.check_hostname = True
+        parsed = parsed.set(drivername="mysql+pymysql", query=query)
+        return create_engine(parsed, echo=False, future=True, pool_pre_ping=True,
+                             pool_recycle=1800, connect_args={"ssl": context})
+    return create_engine(parsed, echo=False, future=True)
 
 
 def get_session_factory(engine):

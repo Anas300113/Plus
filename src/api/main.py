@@ -14,6 +14,7 @@ from datetime import datetime
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import HTMLResponse
+from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 from src.api.dashboard_pages import HOME, LEARN, MOCKS, PARENT, PROGRESS, REVIEW
@@ -21,13 +22,13 @@ from src.api.practice_page import PRACTICE_HTML
 
 from src.core.database import (
     CanonicalQuestion, QuestionOccurrence, QuestionReviewStatus,
-    SourceDocument, SourcePage, get_engine, get_session_factory, init_db,
+    SourceDocument, SourcePage, get_engine, get_session_factory,
 )
 
-DB_URL = os.environ.get("PLUS_DATABASE_URL", "sqlite:///./elevenplus.db")
+DB_URL = (os.environ.get("DATABASE_URL") or os.environ.get(
+    "PLUS_DATABASE_URL", "sqlite:///./elevenplus.db"))
 _engine = get_engine(DB_URL)
 _Session = get_session_factory(_engine)
-init_db(_engine)
 
 
 def get_db():
@@ -182,6 +183,8 @@ def _enforce_session_owner(db: Session, session_id: str,
 
 
 app = FastAPI(title="11+ Platform API", version="0.1.0")
+from src.api.plus11 import router as plus11_router
+app.include_router(plus11_router)
 
 
 class AnswerIn(BaseModel):
@@ -197,6 +200,25 @@ class AnswerIn(BaseModel):
 @app.get("/api/health")
 def health():
     return {"ok": True}
+
+
+@app.get("/api/ready")
+def readiness():
+    """Read-only database/schema probe for the combined app health check."""
+    try:
+        with _engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+        required = {
+            "learning_students", "learning_study_sessions",
+            "canonical_questions", "question_review_status",
+        }
+        if not required.issubset(set(inspect(_engine).get_table_names())):
+            raise HTTPException(503, "database schema is not ready")
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(503, "database is not ready") from None
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -846,4 +868,3 @@ def explain_question_endpoint(question_id: str, db: Session = Depends(get_db)):
         raise HTTPException(403, "question is not approved for study")
     index = _load_knowledge_index()
     return explain_question(db, q, knowledge_index=index)
-
