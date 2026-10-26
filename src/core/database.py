@@ -9,7 +9,7 @@ import os
 import ssl
 
 from sqlalchemy import (
-    JSON, Boolean, DateTime, Float, ForeignKey, Integer, String as SQLString, Text,
+    JSON, Boolean, DateTime, Float, ForeignKey, Integer, String as SQLString, Text, false,
     UniqueConstraint, create_engine, make_url,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
@@ -418,7 +418,7 @@ class LearningQuestionAttempt(Base):
     attempt_number: Mapped[int] = mapped_column(
         Integer, default=1, server_default="1")
     hint_used: Mapped[bool] = mapped_column(
-        Boolean, default=False, server_default="0")
+        Boolean, default=False, server_default=false())
     review_item_id: Mapped[str] = mapped_column(
         String, default="", server_default="", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -600,8 +600,25 @@ class PipelineRun(Base):
 
 
 def get_engine(url: str):
-    """Create an engine; require certificate-verified TLS for managed MySQL."""
+    """Create an engine for local SQLite, managed MySQL, or Supabase Postgres."""
     parsed = make_url(url)
+    if parsed.drivername in ("postgres", "postgresql", "postgresql+psycopg"):
+        query = dict(parsed.query)
+        # Supabase's copied URI often carries sslmode=require, which encrypts
+        # traffic but does not verify the server certificate/hostname. Enforce
+        # verify-full; operators can provide the Supabase CA bundle below.
+        query["sslmode"] = "verify-full"
+        root_cert = os.environ.get("SUPABASE_DB_SSLROOTCERT")
+        if root_cert:
+            query.setdefault("sslrootcert", root_cert)
+        parsed = parsed.set(drivername="postgresql+psycopg", query=query)
+        # Disabling prepared statements keeps this engine compatible with
+        # Supavisor's transaction pooler as well as direct/session connections.
+        return create_engine(
+            parsed, echo=False, future=True, pool_pre_ping=True,
+            pool_size=5, max_overflow=5, pool_recycle=1800,
+            connect_args={"prepare_threshold": None},
+        )
     if parsed.drivername in ("mysql", "mysql+pymysql", "mariadb"):
         query = dict(parsed.query)
         ssl_requested = query.pop("ssl", None)

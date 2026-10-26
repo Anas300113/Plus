@@ -13,7 +13,7 @@ existing database keeps working without a wipe.
 """
 from __future__ import annotations
 
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 from sqlalchemy.schema import CreateColumn, CreateIndex
 
 from src.core.database import Base, utcnow
@@ -26,6 +26,26 @@ def _ensure_migration_table(conn) -> None:
     conn.exec_driver_sql(
         f"CREATE TABLE IF NOT EXISTS {_MIGRATION_TABLE} ("
         "id TEXT PRIMARY KEY, applied_at TEXT NOT NULL)")
+
+
+def _record_migration(conn, migration_id: str) -> bool:
+    """Record one migration using portable named parameters.
+
+    Migrations are intentionally run as a single-writer deployment step, so
+    checking before inserting avoids dialect-specific ignore/upsert syntax.
+    """
+    exists = conn.execute(
+        text(f"SELECT 1 FROM {_MIGRATION_TABLE} WHERE id = :id"),
+        {"id": migration_id},
+    ).first()
+    if exists:
+        return False
+    conn.execute(
+        text(f"INSERT INTO {_MIGRATION_TABLE} (id, applied_at) "
+             "VALUES (:id, :applied_at)"),
+        {"id": migration_id, "applied_at": utcnow().isoformat()},
+    )
+    return True
 
 
 def applied_migrations(engine) -> set[str]:
@@ -71,10 +91,8 @@ def ensure_schema(engine) -> list[str]:
                 conn.exec_driver_sql(
                     f'ALTER TABLE "{table_name}" ADD COLUMN {ddl}')
                 migration_id = f"{SCHEMA_VERSION}:{table_name}.{column_name}"
-                conn.exec_driver_sql(
-                    f"INSERT OR IGNORE INTO {_MIGRATION_TABLE} VALUES (?, ?)",
-                    (migration_id, utcnow().isoformat()))
-                applied.append(migration_id)
+                if _record_migration(conn, migration_id):
+                    applied.append(migration_id)
         _create_missing_indexes(engine, touched, applied)
     else:
         _ensure_migration_table_exists(engine)
@@ -106,10 +124,8 @@ def _record_new_tables(engine) -> list[str]:
                 f"SELECT id FROM {_MIGRATION_TABLE}").fetchall()}
             if migration_id in already:
                 continue
-            conn.exec_driver_sql(
-                f"INSERT OR IGNORE INTO {_MIGRATION_TABLE} VALUES (?, ?)",
-                (migration_id, utcnow().isoformat()))
-            applied.append(migration_id)
+            if _record_migration(conn, migration_id):
+                applied.append(migration_id)
     return applied
 
 
@@ -152,9 +168,7 @@ def _reconcile_fabricated_page_ids(engine) -> list[str]:
         changed = result.rowcount
         if not changed:
             return []  # nothing to fix; do not record a no-op migration
-        conn.exec_driver_sql(
-            f"INSERT OR IGNORE INTO {_MIGRATION_TABLE} VALUES (?, ?)",
-            (_DATA_PAGE_PROVENANCE_ID, utcnow().isoformat()))
+        _record_migration(conn, _DATA_PAGE_PROVENANCE_ID)
     return [_DATA_PAGE_PROVENANCE_ID]
 
 

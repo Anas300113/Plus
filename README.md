@@ -8,18 +8,20 @@ Verbal Reasoning, Non-Verbal Reasoning.
 The Next.js 16 frontend is integrated in `src/app`, `src/components`, and
 `src/lib`. It preserves PlusDash's responsive design, Framer Motion animations,
 learner flows and same-origin API-for-frontend routes. The frontend is the only
-public listener; its server-side BFF forwards verified Manus session tokens to
+public listener; its server-side BFF forwards verified Supabase access tokens to
 the private FastAPI learner API at `/api/me/*`. Existing Plus ingestion,
 canonical-content, review, learning, statistics and legacy APIs are retained.
 
 For local web development, install Node.js 22, pnpm 11.25, and Python 3.12; run
 `pnpm install --frozen-lockfile`, `pnpm setup:python`, copy `.env.example` to
-`.env`, configure the server-only Manus OAuth values, then run `pnpm dev`. The
-supervisor binds FastAPI to loopback and runs Next.js on `PORT`. Before enabling
-production sign-in, configure `MANUS_PROJECT_ID`, `MANUS_JWT_SECRET`, the
-Manus OAuth portal/API URLs, and `PLUS11_AUTH_ALLOWED_ORIGINS` for the app's
-exact public HTTPS origin. Never expose secrets through `NEXT_PUBLIC_*`. See
-`PLUS11_INTEGRATION.md` for the combined runtime and database guidance.
+`.env`, configure Supabase Auth and an isolated local SQLite database, then run
+`pnpm dev`. The supervisor binds FastAPI to loopback and runs Next.js on `PORT`.
+For production, configure the Supabase project URL, publishable key, and server-
+only PostgreSQL `DATABASE_URL`; add the app's exact callback URL to Supabase's
+Auth redirect allowlist. New Supabase accounts receive new learner profiles;
+legacy Manus activity is not automatically linked. Never expose database
+credentials through `NEXT_PUBLIC_*`. See `PLUS11_INTEGRATION.md` for database
+setup and migration guidance.
 
 
 ## Architecture rule

@@ -1,14 +1,17 @@
-"""Security and learning-flow tests for the server-verified Plus11 identity bridge."""
+"""Security and learning-flow tests for verified Supabase Auth identities."""
 from __future__ import annotations
 
 import time
 import uuid
+from types import SimpleNamespace
 
 import jwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 
 from src.api import main as api_main
+from src.api import supabase_identity
 from src.api.main import app
 from src.api.plus11 import get_db
 from src.core.database import (
@@ -21,28 +24,37 @@ from src.core.database import (
     init_db,
 )
 
-SECRET = "plus11-test-secret-never-used-outside-isolated-tests"
-PROJECT_ID = "plus11-test-project"
+SUPABASE_URL = "https://test-project.supabase.co"
+_PRIVATE_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+_PUBLIC_KEY = _PRIVATE_KEY.public_key()
+_DEFAULT_SUBJECT = "11111111-1111-4111-8111-111111111111"
 
 
-def _token(open_id: str, *, project_id: str = PROJECT_ID, expires: int | None = None, name: str = "Sam") -> str:
+def _token(subject: str | None = None, *, issuer: str = f"{SUPABASE_URL}/auth/v1", expires: int | None = None, name: str = "Sam") -> str:
     now = int(time.time())
     claims = {
-        "appId": project_id,
-        "openId": open_id,
-        "name": name,
+        "sub": subject or str(uuid.uuid4()),
+        "iss": issuer,
+        "aud": "authenticated",
+        "role": "authenticated",
+        "user_metadata": {"display_name": name},
         "iat": now,
         "exp": expires if expires is not None else now + 300,
     }
-    return jwt.encode(claims, SECRET, algorithm="HS256")
+    return jwt.encode(claims, _PRIVATE_KEY, algorithm="RS256", headers={"kid": "test-key"})
 
 
 @pytest.fixture()
 def api(tmp_path, monkeypatch):
-    """Bind all account endpoints to a fresh, file-backed SQLite database."""
-    monkeypatch.setenv("MANUS_JWT_SECRET", SECRET)
-    monkeypatch.setenv("MANUS_PROJECT_ID", PROJECT_ID)
-    engine = get_engine(f"sqlite:///{tmp_path / 'plus11-auth-test.sqlite'}")
+    """Bind endpoints and an isolated fake JWKS verifier to a fresh SQLite DB."""
+    monkeypatch.setenv("SUPABASE_URL", SUPABASE_URL)
+    monkeypatch.setattr(
+        supabase_identity,
+        "_jwks_client",
+        lambda _url: SimpleNamespace(
+            get_signing_key_from_jwt=lambda _token: SimpleNamespace(key=_PUBLIC_KEY)),
+    )
+    engine = get_engine(f"sqlite:///{tmp_path / 'supabase-auth-test.sqlite'}")
     init_db(engine)
     monkeypatch.setattr(api_main, "_engine", engine)
     session_factory = get_session_factory(engine)
@@ -61,8 +73,8 @@ def api(tmp_path, monkeypatch):
     engine.dispose()
 
 
-def _headers(open_id: str = "provider-user-1") -> dict[str, str]:
-    return {"Authorization": f"Bearer {_token(open_id)}"}
+def _headers(subject: str | None = None) -> dict[str, str]:
+    return {"Authorization": f"Bearer {_token(subject or _DEFAULT_SUBJECT)}"}
 
 
 def test_readiness_checks_database_and_required_schema(api):
@@ -93,23 +105,24 @@ def _approved_question(session_factory) -> str:
     return question_id
 
 
-def test_identity_requires_valid_signature_expiry_and_project(api):
+def test_identity_requires_valid_signature_expiry_and_issuer(api):
     client, _ = api
     assert client.get("/api/me/profile").status_code == 401
     assert client.get("/api/me/profile", headers={"Authorization": "Bearer not-a-jwt"}).status_code == 401
-    assert client.get("/api/me/profile", headers={"Authorization": f"Bearer {_token('user', expires=int(time.time()) - 1)}"}).status_code == 401
-    assert client.get("/api/me/profile", headers={"Authorization": f"Bearer {_token('user', project_id='another-project')}"}).status_code == 401
+    assert client.get("/api/me/profile", headers={"Authorization": f"Bearer {_token(expires=int(time.time()) - 30)}"}).status_code == 401
+    assert client.get("/api/me/profile", headers={"Authorization": f"Bearer {_token(issuer='https://another-project.supabase.co/auth/v1')}"}).status_code == 401
 
 
-def test_profile_uses_opaque_stable_id_and_never_returns_open_id(api):
+def test_profile_uses_verified_supabase_subject_and_never_returns_token(api):
     client, session_factory = api
-    first = client.get("/api/me/profile", headers=_headers("provider-user-1"))
-    second = client.get("/api/me/profile", headers=_headers("provider-user-1",))
+    subject = str(uuid.uuid4())
+    first = client.get("/api/me/profile", headers=_headers(subject))
+    second = client.get("/api/me/profile", headers=_headers(subject))
     assert first.status_code == second.status_code == 200
-    assert first.json()["student_id"].startswith("p11_")
+    assert first.json()["student_id"] == subject
     assert first.json()["student_id"] == second.json()["student_id"]
-    assert "provider-user-1" not in first.text
-    assert "openId" not in first.json()
+    assert "user_metadata" not in first.json()
+    assert "Bearer " not in first.text
     db = session_factory()
     try:
         assert db.query(LearningStudent).count() == 0
@@ -187,7 +200,7 @@ def test_practice_hides_answers_until_check_and_enforces_session_ownership(api):
 
     other_learner = client.get(
         f"/api/me/practice/sessions/{session['session_id']}",
-        headers=_headers("different-provider-user"),
+        headers=_headers(str(uuid.uuid4())),
     )
     assert other_learner.status_code == 404
 

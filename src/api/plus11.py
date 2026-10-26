@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from src.api.manus_identity import LearnerIdentity, get_current_learner
+from src.api.supabase_identity import LearnerIdentity, get_current_learner
 from src.core.database import (
     CanonicalQuestion, CanonicalSubject, CanonicalTopic,
     LearningQuestionAttempt, LearningRecommendation, LearningReviewItem,

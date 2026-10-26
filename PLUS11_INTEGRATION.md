@@ -1,28 +1,27 @@
-# Plus11 FastAPI integration
+# Plus11 Supabase integration
 
-This repository combines the Plus11 Next.js 16 App Router frontend with the selected Python/FastAPI learning backend. Next.js is the only public listener. FastAPI binds to loopback (`127.0.0.1:8001`) and is called only by server-side BFF routes; browser requests remain same-origin.
+This repository combines the PlusDash Next.js 16 frontend with Plus's full FastAPI/SQLAlchemy backend. Next.js is the only public listener. FastAPI binds to loopback and is called only by same-origin server-side BFF routes.
+
+## Supabase setup
+
+Create a Supabase project, enable the Email provider, and configure email/password sign-up. In Authentication > URL Configuration, set the site URL to the public Plus origin and allow the exact callback URLs `https://<your-origin>/api/auth/callback` and `http://localhost:3000/api/auth/callback` for local development. Configure `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` for Next.js. Set server-side `SUPABASE_URL` to the project origin and `DATABASE_URL` to the PostgreSQL connection string copied from the Supabase Dashboard's Connect dialog. Do not expose database credentials or secret/service-role keys through `NEXT_PUBLIC_*` variables or browser code.
+
+The Python API validates access-token signatures against the project's JWKS, and checks issuer, expiry, audience, role, and UUID subject. The browser session is stored/refreshed through Supabase SSR cookies and the Next.js 16 `src/proxy.ts` entrypoint. Route handlers use verified claims before reading an access token for server-to-server FastAPI requests. Existing same-origin and CSRF protections remain on state-changing requests. Email and user metadata are used only for display; they are not identity or authorization keys.
+
+## Database connection and schema
+
+The backend uses SQLAlchemy with the Supabase PostgreSQL connection as its primary database. For the persistent FastAPI service, use the Supabase direct connection when the runtime network supports IPv6, or the session pooler when it does not. Keep TLS verification enabled. The engine uses a bounded pool and disables prepared statement caching so the selected pooler can be supported. Use the exact connection string and username from Supabase Connect; encode reserved characters in the password.
+
+Production migrations are disabled at application startup. Back up and review the target before running `pnpm db:migrate` with the configured `DATABASE_URL`; run it as a single deployment step, not concurrently from multiple replicas. The migration helper is additive and also performs the documented page-provenance reconciliation. A new empty Supabase database must receive the schema and approved question/content data before learner practice will be useful. Do not assume setting `DATABASE_URL` copies data from SQLite or a previous MySQL database; a separate reviewed export/import and row-count/foreign-key validation is required for those existing records.
+
+## Existing learner data
+
+New Supabase users receive new learner profiles keyed by their verified Supabase Auth UUID. Existing Manus-linked practice history is not automatically linked to a new account and remains untouched in its original database. This avoids unsafe account matching by email. Learners who create new accounts start with new profiles.
 
 ## Local development
 
-1. Install the pinned frontend dependencies with `pnpm install --frozen-lockfile`.
-2. Create the Python environment with `pnpm setup:python`.
-3. Copy `.env.example` to an ignored local `.env` and configure OAuth. Use an isolated SQLite URL such as `DATABASE_URL=sqlite:///./elevenplus.db` for local development; never point write-oriented tests at the managed MySQL database.
-4. Start both services with `pnpm dev`. The supervisor starts FastAPI privately, then Next on `PORT` (3000 by default). For a new local SQLite database, the explicit additive migration runs after both listeners bind. Production migrations are opt-in (`PLUS_RUN_MIGRATIONS=0` by default); run `pnpm api:migrate` only after reviewing the target and current migration behavior.
+Install Node.js 22, pnpm 11.25, and Python 3.12. Run `pnpm install --frozen-lockfile` and `pnpm setup:python`, copy `.env.example` to an ignored `.env`, set the Supabase project URL and publishable key, and use an isolated SQLite URL such as `DATABASE_URL=sqlite:///./elevenplus.db` for local work. Set `SUPABASE_URL` to the same project origin if testing Supabase login locally. Add `http://localhost:3000/api/auth/callback` to Supabase's redirect allowlist. Start both services with `pnpm dev`.
 
-FastAPI `GET /api/health` is a liveness probe. Next `GET /health` checks FastAPI's read-only `GET /api/ready`; readiness is successful only when the required database schema is available.
+## Checks
 
-## Tests and checks
-
-Run `pnpm lint`, `pnpm typecheck`, and `pnpm build`. Run the Python suite with `pnpm api:test` and syntax validation with `pnpm api:compile`. The Python write-path tests use isolated SQLite fixtures. Do not run migrations or write-oriented tests against the managed development/production-shared MySQL database.
-
-## Identity and guest mode
-
-The guest/demo learning experience uses frontend-only sample state. It is never written to the backend or represented as an authenticated learner record. Signed-in Next.js routes validate the Manus session cookie, enforce same-origin/CSRF checks on mutations, and forward the signed session only in a server-side Bearer header. FastAPI verifies HS256, expiry, and `appId === MANUS_PROJECT_ID`, derives an opaque stable learner ID from the verified provider `openId`, ignores client-supplied identity, and scopes profile, practice, progress, and review data to that ID.
-
-FastAPI rejects unauthenticated requests to `/api/me/*`. Legacy ID-only student routes remain fail-closed in real-data mode. Signed-in practice uses only the approved-question catalog. Answer keys and explanations are returned only after an answer check or an explicit review-card reveal. If there are no approved questions or saved learner records, the app shows an honest empty state instead of guest sample metrics.
-
-## Managed database and production
-
-`DATABASE_URL` is consumed at runtime only. `mysql://` is normalized to SQLAlchemy's PyMySQL dialect, and MySQL connections require certificate and hostname verification. `PLUS_MYSQL_SSL_CA` can supply an approved CA bundle if required. Never put database, OAuth, or JWT secrets in `NEXT_PUBLIC_*` variables, browser code, or committed files.
-
-The managed development and production environments may share one database. The existing Plus migration implementation is retained; review `src/core/migrations.py` before running it because its current schema preparation also reconciles known page-provenance rows. Production startup migrations are disabled by default. After an operator reviews the target and migration code, set `PLUS_RUN_MIGRATIONS=1` only if schema changes are required; otherwise apply the reviewed migration explicitly. Readiness remains false until the required tables are present.
+Run `pnpm lint`, `pnpm typecheck`, `pnpm build`, and `.venv/bin/pytest -q tests/`. Backend test fixtures use isolated SQLite databases and stub the JWKS verifier; they do not connect to or write to Supabase. Next's `/health` probes the private FastAPI readiness endpoint, which stays unready until the configured database schema exists.

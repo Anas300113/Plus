@@ -63,9 +63,3 @@ export function useSession(): SessionContextValue {
   if (!context) throw new Error("useSession must be used inside SessionProvider.");
   return context;
 }
-
-export function startSignIn(): void {
-  const origin = window.location.origin;
-  const destination = new URL(`/api/auth/start?origin=${encodeURIComponent(origin)}`, origin);
-  window.location.assign(destination.toString());
-}
