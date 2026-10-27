@@ -1,4 +1,4 @@
-﻿import { authenticated, handleApiError, json } from "@/lib/api-server";
+import { authenticated, handleApiError, json } from "@/lib/api-server";
 import { getProgress } from "@/lib/learner-service";
 
 export const runtime = "nodejs";
@@ -9,6 +9,6 @@ export async function GET(request: Request) {
   try {
     return json(await getProgress(auth.result.token));
   } catch (error) {
-    return handleApiError(error, "We couldnΓÇÖt load your progress just now. Please try again.");
+    return handleApiError(error, "We couldn’t load your progress just now. Please try again.");
   }
 }

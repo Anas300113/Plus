@@ -1,4 +1,4 @@
-﻿import { authenticated, handleApiError, json, jsonError } from "@/lib/api-server";
+import { authenticated, handleApiError, json, jsonError } from "@/lib/api-server";
 import { verifyMutation } from "@/lib/auth";
 import { updateReviewCard } from "@/lib/learner-service";
 
@@ -16,6 +16,6 @@ export async function POST(request: Request, context: { params: Promise<{ cardId
     const { cardId } = await context.params;
     return json(await updateReviewCard(auth.result.token, cardId, body.outcome, body.eventId));
   } catch (error) {
-    return handleApiError(error, "We couldnΓÇÖt save this review just now. Please try again.");
+    return handleApiError(error, "We couldn’t save this review just now. Please try again.");
   }
 }

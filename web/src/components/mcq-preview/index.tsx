@@ -40,7 +40,10 @@ export function McqPreview() {
   }, []);
 
   useEffect(() => {
-    loadQuestion();
+    const timer = setTimeout(() => {
+      loadQuestion();
+    }, 0);
+    return () => clearTimeout(timer);
   }, [loadQuestion]);
 
   const handleSelect = (letter: string) => {

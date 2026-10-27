@@ -1,27 +1,43 @@
 import { NextResponse } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { isAllowedPublicOrigin } from "@/lib/auth";
+import { OAUTH_STATE_COOKIE, SESSION_COOKIE, cookieOptions, decodeOAuthState, exchangeManusCode, signLearnerSession, verifyOAuthStateCookie } from "@/lib/auth";
 
 export const runtime = "nodejs";
 
+function accountRedirect(origin: string, state: string) {
+  const destination = new URL("/account", origin);
+  destination.searchParams.set("auth", state);
+  return NextResponse.redirect(destination, { status: 303 });
+}
+
 export async function GET(request: Request) {
   const url = new URL(request.url);
-  const origin = url.origin;
-  if (!isAllowedPublicOrigin(origin)) {
-    return new Response("This callback origin is not allowed.", { status: 403 });
+  const state = decodeOAuthState(url.searchParams.get("state") ?? "");
+  const publicOrigin = state ? new URL(state.redirectUri).origin : null;
+  if (!state || !publicOrigin || !verifyOAuthStateCookie(request, state)) {
+    return new Response("Sign-in could not be verified. Return to Plus11 and try again.", {
+      status: 400,
+      headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
+    });
   }
 
   const code = url.searchParams.get("code");
-  const destination = new URL("/account", origin);
-  if (code && code.length <= 4096) {
-    const supabase = await createSupabaseServerClient();
-    const { error } = await supabase.auth.exchangeCodeForSession(code);
-    destination.searchParams.set("auth", error ? "error" : "success");
-  } else {
-    destination.searchParams.set("auth", "error");
+  if (!code || code.length > 4096 || url.searchParams.has("error")) {
+    const response = accountRedirect(publicOrigin, "error");
+    response.headers.append("Set-Cookie", `${OAUTH_STATE_COOKIE}=; ${cookieOptions(new URL(publicOrigin), 0)}`);
+    return response;
   }
 
-  const response = NextResponse.redirect(destination, { status: 303 });
-  response.headers.set("Cache-Control", "no-store");
-  return response;
+  try {
+    const user = await exchangeManusCode(code, state.redirectUri);
+    const sessionToken = await signLearnerSession({ openId: user.openId, name: user.name });
+    const response = accountRedirect(publicOrigin, "success");
+    response.headers.append("Set-Cookie", `${SESSION_COOKIE}=${encodeURIComponent(sessionToken)}; ${cookieOptions(new URL(publicOrigin))}`);
+    response.headers.append("Set-Cookie", `${OAUTH_STATE_COOKIE}=; ${cookieOptions(new URL(publicOrigin), 0)}`);
+    response.headers.set("Cache-Control", "no-store");
+    return response;
+  } catch {
+    const response = accountRedirect(publicOrigin, "error");
+    response.headers.append("Set-Cookie", `${OAUTH_STATE_COOKIE}=; ${cookieOptions(new URL(publicOrigin), 0)}`);
+    return response;
+  }
 }

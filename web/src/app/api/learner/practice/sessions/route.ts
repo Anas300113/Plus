@@ -1,4 +1,4 @@
-﻿import { authenticated, handleApiError, json, jsonError } from "@/lib/api-server";
+import { authenticated, handleApiError, json, jsonError } from "@/lib/api-server";
 import { verifyMutation } from "@/lib/auth";
 import { createPracticeSession } from "@/lib/learner-service";
 
@@ -17,6 +17,6 @@ export async function POST(request: Request) {
     }
     return json(await createPracticeSession(auth.result.token, body.subjectId, body.topicId, body.idempotencyKey), 201);
   } catch (error) {
-    return handleApiError(error, "We couldnΓÇÖt start practice just now. Please try again.");
+    return handleApiError(error, "We couldn’t start practice just now. Please try again.");
   }
 }

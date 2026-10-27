@@ -1,4 +1,4 @@
-﻿import { authenticated, handleApiError, json, jsonError } from "@/lib/api-server";
+import { authenticated, handleApiError, json, jsonError } from "@/lib/api-server";
 import { verifyMutation } from "@/lib/auth";
 import { submitPracticeAnswer } from "@/lib/learner-service";
 
@@ -34,6 +34,6 @@ export async function POST(request: Request, context: { params: Promise<{ sessio
     });
     return json(result);
   } catch (error) {
-    return handleApiError(error, "We couldnΓÇÖt save your answer just now. Please try again.");
+    return handleApiError(error, "We couldn’t save your answer just now. Please try again.");
   }
 }

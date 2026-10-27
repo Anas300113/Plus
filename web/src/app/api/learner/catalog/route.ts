@@ -1,4 +1,4 @@
-﻿import { authenticated, handleApiError, json } from "@/lib/api-server";
+import { authenticated, handleApiError, json } from "@/lib/api-server";
 import { getCatalog } from "@/lib/learner-service";
 
 export const runtime = "nodejs";
@@ -9,6 +9,6 @@ export async function GET(request: Request) {
   try {
     return json(await getCatalog(auth.result.token));
   } catch (error) {
-    return handleApiError(error, "We couldnΓÇÖt load the reviewed question bank. Please try again.");
+    return handleApiError(error, "We couldn’t load the reviewed question bank. Please try again.");
   }
 }

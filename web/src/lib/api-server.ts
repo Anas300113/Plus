@@ -1,4 +1,4 @@
-﻿import "server-only";
+import "server-only";
 
 import { NextResponse } from "next/server";
 import { getLearnerSession } from "@/lib/auth";
@@ -21,7 +21,7 @@ export async function authenticated(request: Request) {
   return { result };
 }
 
-export function handleApiError(error: unknown, fallback = "We couldnΓÇÖt complete that just now. Please try again."): NextResponse {
+export function handleApiError(error: unknown, fallback = "We couldn’t complete that just now. Please try again."): NextResponse {
   if (error instanceof AppError) return jsonError(error.message, error.status, error.code);
   return jsonError(fallback, 500, "server_error");
 }

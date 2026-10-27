@@ -119,7 +119,7 @@ export function QuestionCard({
               <Check size={18} strokeWidth={2.5} />
             </span>
             <div className="mcq-feedback-copy">
-              <strong>That's right.</strong>
+              <strong>That&apos;s right.</strong>
               <p>{explanation ?? "That is the correct answer."}</p>
             </div>
             <button className="cta-button" onClick={onRetry}>

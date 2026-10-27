@@ -1,4 +1,4 @@
-﻿import "server-only";
+import "server-only";
 
 import { AppError } from "@/lib/errors";
 
@@ -86,14 +86,14 @@ async function backend<T>(token: string, path: string, init: RequestInit = {}): 
       signal: AbortSignal.timeout(15_000),
     });
   } catch {
-    throw new AppError("We couldnΓÇÖt reach your learning just now. Please try again.", 503, "learning_service_unavailable");
+    throw new AppError("We couldn’t reach your learning just now. Please try again.", 503, "learning_service_unavailable");
   }
   const payload = await response.json().catch(() => null) as { detail?: unknown } | null;
   if (!response.ok) {
     const detail = typeof payload?.detail === "string" ? payload.detail : "";
     const message = response.status >= 500
-      ? "We couldnΓÇÖt reach your learning just now. Please try again."
-      : detail || "We couldnΓÇÖt complete that just now. Please try again.";
+      ? "We couldn’t reach your learning just now. Please try again."
+      : detail || "We couldn’t complete that just now. Please try again.";
     throw new AppError(message, response.status, response.status === 409 ? "learning_conflict" : "learning_backend_error");
   }
   if (payload === null) throw new AppError("The learning service returned an invalid response.", 502, "learning_service_invalid_response");

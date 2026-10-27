@@ -1,4 +1,4 @@
-﻿import { authenticated, handleApiError, json } from "@/lib/api-server";
+import { authenticated, handleApiError, json } from "@/lib/api-server";
 import { verifyMutation } from "@/lib/auth";
 import { retryPracticeQuestion } from "@/lib/learner-service";
 
@@ -12,6 +12,6 @@ export async function POST(request: Request, context: { params: Promise<{ sessio
     const { sessionId } = await context.params;
     return json(await retryPracticeQuestion(auth.result.token, sessionId));
   } catch (error) {
-    return handleApiError(error, "We couldnΓÇÖt reopen that question just now. Please try again.");
+    return handleApiError(error, "We couldn’t reopen that question just now. Please try again.");
   }
 }
