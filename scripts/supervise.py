@@ -113,6 +113,14 @@ def main() -> int:
         and env.get("PLUS_RUN_MIGRATIONS", "1") == "1"
     )
 
+    if run_migrations:
+        migration_result = subprocess.run(
+            [python, "-m", "src.core.migrate"], cwd=ROOT, env=env,
+            check=False,
+        )
+        if migration_result.returncode != 0:
+            raise RuntimeError("The explicit Plus11 additive database migration failed.")
+
     api = subprocess.Popen(
         [python, "-m", "uvicorn", "src.api.main:app", "--host", "127.0.0.1",
          "--port", str(api_port), "--no-access-log"],
@@ -134,18 +142,6 @@ def main() -> int:
             command = [str(next_bin), "dev", "--hostname", "0.0.0.0", "--port", str(public_port)]
         web = subprocess.Popen(command, cwd=ROOT, env=env)
         wait_for_http(web, f"http://127.0.0.1:{public_port}/")
-
-        if run_migrations:
-            migration = subprocess.Popen(
-                [python, "-m", "src.core.migrate"], cwd=ROOT, env=env,
-            )
-            while migration.poll() is None:
-                if api.poll() is not None or web.poll() is not None:
-                    terminate(migration)
-                    raise RuntimeError("A service exited while the additive migration was running.")
-                time.sleep(0.2)
-            if migration.returncode != 0:
-                raise RuntimeError("The explicit Plus11 additive database migration failed.")
 
         if production:
             wait_for_http(api, f"http://127.0.0.1:{api_port}/api/ready")

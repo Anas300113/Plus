@@ -57,6 +57,14 @@ export type ProgressData = {
   practiceDays: number;
   nextStep: { subjectId: string; topicId: string; title: string; detail: string; href: string };
 };
+export type WeeklyPlan = {
+  date: string; weekday: string; subjectId: string; subject: string;
+  topicId: string; topic: string;
+  mode: "subject_topic" | "subject_review" | "weak_topic_repair" | "combined";
+  requestedQuestions: number; availableQuestions: number; questionCount: number;
+  ready: boolean; weakAccuracy: number | null;
+  lesson: { title: string; overview: string; strategy: string; workedExample: string; commonMistakes: string[] };
+};
 
 function apiBase(): URL {
   const raw = process.env.PLUS_API_BASE_URL ?? "http://127.0.0.1:8001";
@@ -135,6 +143,38 @@ export async function getDashboard(token: string) {
     hasActiveSession: result.has_active_session,
     minutesByDay: result.minutes_by_day,
   };
+}
+
+function parseWeeklyPlan(value: Record<string, unknown>): WeeklyPlan {
+  const lesson = (value.lesson ?? {}) as Record<string, unknown>;
+  return {
+    date: String(value.date ?? ""), weekday: String(value.weekday ?? ""),
+    subjectId: String(value.subject_id ?? ""), subject: String(value.subject ?? ""),
+    topicId: String(value.topic_id ?? ""), topic: String(value.topic ?? ""),
+    mode: (value.mode as WeeklyPlan["mode"]) ?? "subject_topic",
+    requestedQuestions: Number(value.requested_questions ?? 0),
+    availableQuestions: Number(value.available_questions ?? 0),
+    questionCount: Number(value.question_count ?? 0),
+    ready: value.ready === true,
+    weakAccuracy: typeof value.weak_accuracy === "number" ? value.weak_accuracy : null,
+    lesson: {
+      title: String(lesson.title ?? "Quick concept overview"),
+      overview: String(lesson.overview ?? ""), strategy: String(lesson.strategy ?? ""),
+      workedExample: String(lesson.worked_example ?? ""),
+      commonMistakes: Array.isArray(lesson.common_mistakes) ? lesson.common_mistakes.map(String) : [],
+    },
+  };
+}
+
+export async function getWeeklyPlan(token: string): Promise<WeeklyPlan> {
+  return parseWeeklyPlan(await backend<Record<string, unknown>>(token, "/api/me/weekly-plan"));
+}
+
+export async function startWeeklyPlan(token: string, idempotencyKey: string): Promise<PracticeSession> {
+  const result = await backend<{ session: Parameters<typeof practiceSession>[0] }>(token, "/api/me/weekly-plan/start", {
+    method: "POST", body: jsonBody({ idempotency_key: idempotencyKey }),
+  });
+  return practiceSession(result.session);
 }
 
 export async function getProgress(token: string): Promise<ProgressData> {

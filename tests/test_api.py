@@ -22,6 +22,8 @@ import src.api.main as api_main  # noqa: E402
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     db_file = tmp_path / "api.db"
+    # Administrative endpoints require the reviewer credential in production.
+    monkeypatch.setenv("PLUS_REVIEWER_TOKEN", "test-reviewer-token")
     url = f"sqlite:///{db_file}"
     engine = get_engine(url)
     init_db(engine)
@@ -88,10 +90,12 @@ def test_curriculum_and_parent_endpoints(client):
 
 def test_exam_assemble_endpoint(client):
     c, qid = client
-    exam = c.post("/api/exams", json={"name": "E"}).json()
+    headers = {"X-Reviewer-Token": "test-reviewer-token"}
+    exam = c.post("/api/exams", json={"name": "E"}, headers=headers).json()
     out = c.post(f"/api/exams/{exam['exam_id']}/assemble",
                  json={"mode": "generated",
-                       "sections": [{"subject": "maths", "count": 5}]}).json()
+                       "sections": [{"subject": "maths", "count": 5}]},
+                 headers=headers).json()
     assert out["questions"] == [qid]
 
 
@@ -230,7 +234,8 @@ def test_statistics_endpoint_shapes(client):
     assert len(stats["practice_volume"]) == 14
     assert "weak_topics" in stats and "topic_mastery" in stats
 
-    system = c.get("/api/system/statistics").json()
+    system = c.get("/api/system/statistics", headers={
+        "X-Reviewer-Token": "test-reviewer-token"}).json()
     assert system["questions_total"] == 1
     assert system["validation_status_counts"]["approved"] == 1
     assert system["hardest_questions"][0]["error_rate"] == 0.0

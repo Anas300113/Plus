@@ -1,0 +1,58 @@
+version: "1.0"
+board: gl
+name: "GL-style 11+ foundation curriculum"
+notes:
+  - "Original practice content only; not official GL Assessment material."
+  - "Local authorities and schools choose their own subjects, timings, and balance."
+subjects:
+  - maths
+  - english
+  - verbal_reasoning
+  - non_verbal_reasoning
+phases:
+  - id: baseline
+    weeks: "1"
+    purpose: "Diagnostic baseline"
+    session_types: [diagnostic]
+    target_accuracy: null
+    question_mix: {maths: 8, english: 8, verbal_reasoning: 8, non_verbal_reasoning: 8}
+  - id: foundation
+    weeks: "2-7"
+    purpose: "Teach and practise one skill at a time"
+    session_types: [learn, practice]
+    target_accuracy: 0.75
+    question_mix: {topic_drill: 10, review: 5}
+  - id: consolidation
+    weeks: "8-12"
+    purpose: "Interleave related skills and close gaps"
+    session_types: [practice, review, catch_up]
+    target_accuracy: 0.80
+    question_mix: {topic_drill: 8, mixed: 8, review: 6}
+  - id: exam_conditioning
+    weeks: "13-16"
+    purpose: "Build pacing and accuracy under time pressure"
+    session_types: [practice, mock]
+    target_accuracy: 0.85
+    question_mix: {mixed: 20, review: 10}
+  - id: readiness
+    weeks: "17+"
+    purpose: "Maintain strengths and repair recurring mistakes"
+    session_types: [mock, review, catch_up]
+    target_accuracy: 0.85
+    question_mix: {mixed: 30, review: 10}
+lesson_standard:
+  order:
+    - retrieval_warmup
+    - explicit_method
+    - worked_example
+    - guided_practice
+    - independent_practice
+    - exit_check
+    - spaced_review
+  timed_practice_gate:
+    minimum_topic_accuracy: 0.75
+    minimum_answered_questions: 8
+  review_rules:
+    wrong_answer: "show explanation, schedule review, and surface the skill"
+    repeated_mistake: "create catch-up recommendation before adding difficulty"
+    mastered_skill: "interleave with a neighbouring skill rather than repeating only easy items"

@@ -3,6 +3,7 @@ id. Thumbnails are served only for known assets."""
 from __future__ import annotations
 
 import uuid
+from hashlib import sha256
 
 from fastapi import UploadFile
 from sqlalchemy.orm import Session
@@ -13,7 +14,12 @@ from src.ingest.assets import store_image_bytes
 UPLOAD_DIR = "data/uploads"
 
 
-def register_upload(session: Session, file: UploadFile, repo_name: str = "upload"):
+def sha256_file_from_bytes(data: bytes) -> str:
+    return sha256(data).hexdigest()
+
+
+async def register_upload(session: Session, file: UploadFile,
+                          repo_name: str = "upload"):
     data = (await file.read())
     sha = sha256_file_from_bytes(data)
     doc = session.query(SourceDocument).filter_by(file_sha256=sha).first()

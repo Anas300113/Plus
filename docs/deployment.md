@@ -16,6 +16,7 @@
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Frontend | Supabase publishable key |
 | `SUPABASE_URL` | Backend | Supabase project URL |
 | `DATABASE_URL` | Backend | Postgres connection string |
+| `PLUS_DB_SSLMODE` | Backend | `require` by default; use `verify-full` only with the Supabase CA bundle |
 | `PLUS11_AUTH_ALLOWED_ORIGINS` | Backend | Allowed CORS origins |
 | `PLUS_API_BASE_URL` | Frontend | Backend URL |
 | `PLUS_API_PORT` | Backend | Backend port |
@@ -32,16 +33,16 @@
 
 ### Frontend
 ```bash
-cd web
-npm ci
-npm run build
-npm start
+pnpm install --frozen-lockfile
+pnpm build
+node server.js
 ```
 
 ### Backend
 ```bash
 pip install -r requirements.txt
-python -m uvicorn src.api.main:app --host 0.0.0.0 --port 8001
+python -m src.core.migrate
+python -m uvicorn src.api.main:app --host 127.0.0.1 --port 8001
 ```
 
 ### Full stack
@@ -52,6 +53,12 @@ pnpm start # Production (via supervise.py)
 
 ## Database Migrations
 
+Use the Supabase Dashboard's **direct** database connection for migrations,
+not the transaction pooler. The application can use a pooled connection, but
+schema DDL and the migration advisory lock must run against the direct/session
+endpoint. URL-encode the database password and keep the connection string in a
+secret manager.
+
 Run migrations before deploying new schema:
 
 ```bash
@@ -60,12 +67,17 @@ PLUS_RUN_MIGRATIONS=1 python -m src.core.migrate
 ```
 
 **WARNING**: Migrations are additive. Review `src/core/migrations.py` before running.
+The migration command is idempotent and records applied actions in
+`schema_migrations`; run it once as a deployment step, then set
+`PLUS_RUN_MIGRATIONS=0` for normal application startup.
 
 ## Health Checks
 
 - Frontend: `GET /` → 200
 - Backend: `GET /api/health` → 200
-- Database: Check Supabase dashboard
+- Backend readiness: `GET /api/ready` → 200 only after the database connection and
+  required learner tables are available
+- Database: Check Supabase dashboard and confirm the migration step completed
 
 ## Rollback Strategy
 

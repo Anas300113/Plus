@@ -129,6 +129,25 @@ class CanonicalQuestionType(Base):
 class CanonicalQuestion(Base):
     __tablename__ = "canonical_questions"
     id: Mapped[str] = mapped_column(String, primary_key=True)
+    # Versioned normalized contract. The legacy columns below remain populated
+    # so existing API clients and learning code continue to work during the
+    # migration to the explicit schema.
+    schema_version: Mapped[str] = mapped_column(
+        String, default="1.1.0", server_default="1.1.0")
+    subject_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("canonical_subjects.id"), nullable=True, index=True)
+    topic_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("canonical_topics.id"), nullable=True, index=True)
+    skill_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("canonical_skills.id"), nullable=True, index=True)
+    prompt_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    answer_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    assets_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    source_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("source_documents.id"), nullable=True, index=True)
+    validation_status: Mapped[str] = mapped_column(
+        String, default="validation_required", server_default="validation_required",
+        index=True)
     subject: Mapped[str] = mapped_column(String, nullable=False, index=True)
     topic: Mapped[str] = mapped_column(String, nullable=False, index=True)
     subtopic: Mapped[str] = mapped_column(String, default="")
@@ -604,13 +623,20 @@ def get_engine(url: str):
     parsed = make_url(url)
     if parsed.drivername in ("postgres", "postgresql", "postgresql+psycopg"):
         query = dict(parsed.query)
-        # Supabase's copied URI often carries sslmode=require, which encrypts
-        # traffic but does not verify the server certificate/hostname. Enforce
-        # verify-full; operators can provide the Supabase CA bundle below.
-        query["sslmode"] = "verify-full"
+        # Supabase supplies connection strings with sslmode=require. Respect
+        # that explicit value by default so a deployment does not unexpectedly
+        # fail because a CA bundle is unavailable. Operators who have mounted
+        # the Supabase CA bundle can opt into hostname verification with
+        # PLUS_DB_SSLMODE=verify-full (or verify-ca).
+        sslmode = os.environ.get("PLUS_DB_SSLMODE", "").strip().lower()
+        if not sslmode:
+            sslmode = str(query.get("sslmode", "require")).strip().lower()
+        if sslmode not in {"require", "verify-ca", "verify-full"}:
+            raise ValueError("PLUS_DB_SSLMODE must be require, verify-ca, or verify-full.")
+        query["sslmode"] = sslmode
         root_cert = os.environ.get("SUPABASE_DB_SSLROOTCERT")
         if root_cert:
-            query.setdefault("sslrootcert", root_cert)
+            query["sslrootcert"] = root_cert
         parsed = parsed.set(drivername="postgresql+psycopg", query=query)
         # Disabling prepared statements keeps this engine compatible with
         # Supavisor's transaction pooler as well as direct/session connections.

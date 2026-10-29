@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plus.local/schemas/question.schema.json",
+  "title": "Plus canonical 11+ question",
+  "type": "object",
+  "required": ["schema_version", "id", "subject_id", "topic_id", "question_type", "prompt", "options", "answer", "explanation", "difficulty", "assets", "provenance", "validation"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "id": {"type": "string", "minLength": 1},
+    "subject_id": {"enum": ["maths", "english", "verbal_reasoning", "non_verbal_reasoning"]},
+    "topic_id": {"type": ["string", "null"]},
+    "skill_id": {"type": ["string", "null"]},
+    "question_type": {"enum": ["mcq", "numeric", "free_text", "ordering", "image_choice", "multi_select", "matching", "cloze", "creative_writing", "unknown_custom"]},
+    "prompt": {
+      "type": "object",
+      "required": ["text"],
+      "properties": {"text": {"type": "string"}, "instructions": {"type": "string"}, "context": {"type": "string"}},
+      "additionalProperties": true
+    },
+    "options": {"type": "array", "items": {"type": "object", "required": ["id", "text"], "properties": {"id": {"type": "string"}, "text": {"type": "string"}}, "additionalProperties": true}},
+    "answer": {
+      "type": "object",
+      "required": ["type", "value"],
+      "properties": {"type": {"type": "string"}, "value": {}, "accepted_values": {"type": "array"}, "tolerance": {"type": ["number", "null"]}}
+    },
+    "explanation": {"type": "object", "required": ["text"], "properties": {"text": {"type": "string"}, "verified": {"type": "boolean"}}},
+    "difficulty": {"type": ["integer", "null"], "minimum": 1, "maximum": 5},
+    "assets": {"type": "array", "items": {"type": "object"}},
+    "provenance": {
+      "type": "object",
+      "required": ["source_id", "licence"],
+      "properties": {"source_id": {"type": "string"}, "source_path": {"type": "string"}, "page": {"type": ["integer", "null"]}, "source_question_id": {"type": ["string", "null"]}, "licence": {"type": "string"}}
+    },
+    "validation": {
+      "type": "object",
+      "required": ["status", "answer_verified"],
+      "properties": {"status": {"enum": ["discovered", "extracted", "ai_reviewed", "validation_required", "approved", "rejected"]}, "answer_verified": {"type": "boolean"}, "explanation_verified": {"type": "boolean"}}
+    }
+  },
+  "additionalProperties": true
+}

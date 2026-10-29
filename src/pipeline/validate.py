@@ -65,8 +65,15 @@ def run(session: Session, docs=None) -> dict:
             kept = candidate["options_json"] or []
             q = CanonicalQuestion(
                 id=str(uuid.uuid4()), subject="maths", topic="general",
+                schema_version="1.1.0", subject_id="maths", topic_id=None,
+                skill_id=None,
                 question_type="mcq", question_text=body,
                 options_json=kept if kept and kept[0].get("text") else None,
+                prompt_json={"text": body},
+                answer_json={"type": "single_choice",
+                             "value": occ.linked_answer or "A"},
+                assets_json=[], source_id=occ.document_id,
+                validation_status="validation_required",
                 fingerprint=content_fingerprint(body, ""))
             session.add(q)
             session.flush()

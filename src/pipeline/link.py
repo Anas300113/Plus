@@ -51,6 +51,15 @@ def _stem_tokens(path: str) -> set[str]:
     return {t for t in re.split(r"[^a-z0-9]+", stem) if t}
 
 
+def _paper_key(path: str) -> str:
+    """Normalize a paper filename while removing answer-key markers."""
+    tokens = [t for t in re.split(r"[^a-z0-9]+", Path(str(path)).stem.lower()) if t]
+    tokens = [t for t in tokens if t not in {
+        "answer", "answers", "ans", "key", "marking", "scheme", "solutions",
+    }]
+    return "".join(tokens)
+
+
 def _has_key_heading(page_text: str) -> bool:
     return bool(KEY_HEADING.search((page_text or "")[:400]))
 
@@ -116,31 +125,58 @@ def key_table(pages: list[SourcePage]) -> tuple[dict[str, str], set[str]]:
 def run(session: Session, docs: list[SourceDocument]) -> dict:
     tables: dict[str, dict[str, str]] = {}
     ambiguous: dict[str, set[str]] = {}
+    doc_pages: dict[str, list[SourcePage]] = {}
     for doc in docs:
         pages = session.query(SourcePage).filter_by(document_id=doc.id).all()
+        doc_pages[doc.id] = pages
         if is_answer_sheet(doc, pages):
             table, conf = key_table(pages)
             if table:
                 tables[doc.id] = table
                 ambiguous[doc.id] = conf
 
+    # Pair only an unambiguous answer document with the same directory and
+    # normalized paper stem. This resolves files such as
+    # ``ks2_wksht_19_a.pdf`` + ``ks2_wksht_19_a_ans-v2.pdf`` without allowing
+    # a generic answer sheet to answer an unrelated paper by question number.
+    paired_tables: dict[str, tuple[dict[str, str], set[str]]] = {}
+    groups: dict[tuple[str, str], list[str]] = {}
+    for doc_id in tables:
+        doc = next((d for d in docs if d.id == doc_id), None)
+        if doc is not None:
+            groups.setdefault((str(Path(doc.source_path).parent),
+                              _paper_key(doc.source_path)), []).append(doc_id)
+    for doc in docs:
+        if doc.id in tables or not session.query(QuestionOccurrence).filter_by(
+                document_id=doc.id).first():
+            continue
+        group = (str(Path(doc.source_path).parent), _paper_key(doc.source_path))
+        candidates = groups.get(group, [])
+        if len(candidates) == 1:
+            key_id = candidates[0]
+            paired_tables[doc.id] = (tables[key_id], ambiguous.get(key_id, set()))
+
     linked = 0
+    paired = 0
     unresolved = 0
     for occ in session.query(QuestionOccurrence).all():
         table = tables.get(occ.document_id)
+        conf = ambiguous.get(occ.document_id, set())
+        if not table and occ.document_id in paired_tables:
+            table, conf = paired_tables[occ.document_id]
+            paired += 1
         if not table:
             unresolved += 1
             continue
         num = str(occ.question_number)
         ans = table.get(num, "")
-        if ans and num not in ambiguous.get(occ.document_id, set()):
+        if ans and num not in conf:
             occ.linked_answer = ans
             linked += 1
         else:
             unresolved += 1
     session.commit()
-    log.info("link: %d occurrences matched to own-document keys, %d unresolved "
-             "(%d key documents)", linked, unresolved, len(tables))
+    log.info("link: %d occurrences matched (%d via paired files), %d unresolved "
+             "(%d key documents)", linked, paired, unresolved, len(tables))
     return {"linked": linked, "answer_keys": len(tables),
             "unresolved": unresolved}
-

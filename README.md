@@ -50,6 +50,17 @@ evidence-based learning mechanics — no AI required on the critical path.
   not an LLM
 - Unapproved questions excluded from sessions
 
+### Weekly learner cycle
+
+The authenticated dashboard provides a deterministic weekly plan: Monday Maths,
+Tuesday English, Wednesday Non-Verbal Reasoning, Thursday Verbal Reasoning, and
+Friday a 40-question balanced check (10 per subject). Each plan includes a
+stored mini-lesson, strategy, worked-example prompt, common mistakes, and an
+idempotent test start. If measured mastery identifies a weak topic, Friday
+switches to a focused repair test. The learner endpoints are
+`GET /api/me/weekly-plan` and `POST /api/me/weekly-plan/start`; both select
+approved canonical questions only.
+
 ### ReviewItem scheduling (`src/learning/review.py`)
 - `LearningReviewItem`: what to review and when — scheduling state only,
   separate from mastery aggregates and evidence
@@ -155,11 +166,24 @@ pip install -r requirements.txt  # or: pip install pydantic pydantic-settings sq
 $env:PYTHONPATH='.'
 python scripts/build_fixtures.py
 python scripts/seed_taxonomy.py --db sqlite:///./elevenplus.db
+PYTHONPATH=. python scripts/seed_gl_curriculum.py --db sqlite:///./elevenplus.db
+PYTHONPATH=. python scripts/import_11_dump.py --dump /path/to/11-dump --db sqlite:///./elevenplus.db
+PYTHONPATH=. python scripts/export_question_bank.py --db sqlite:///./elevenplus.db --out data/exports/question-bank.jsonl
 python scripts/spike_extract.py --source-root data/fixtures/spike --repo-name spike --batch spike-001 --db sqlite:///./elevenplus.db
 $env:PLUS_DATABASE_URL='sqlite:///./elevenplus.db'
 python -m src.core.migrate  # review target/migration behavior first
 python -m uvicorn src.api.main:app --port 8000
 ```
+
+The GL-style foundation bank and curriculum are described in
+[`docs/gl-curriculum.md`](docs/gl-curriculum.md). The builder creates original,
+reviewable seed questions and structured lesson records; it does not copy GL
+Assessment material or assume that every local authority uses the same paper.
+The separate [`docs/11-dump-import.md`](docs/11-dump-import.md) describes the
+rights-safe workflow for cataloguing and reviewing the external 11+ dump.
+The normalized contract is defined in
+[`schemas/question.schema.json`](schemas/question.schema.json); the bulk export
+contains approved questions plus review-gated dump occurrences.
 
 ## Knowledge engine & ingestion CLI (`scripts/knowledge_cli.py`)
 

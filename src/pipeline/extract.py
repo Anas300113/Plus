@@ -17,6 +17,16 @@ from src.core.logging import get_logger
 log = get_logger("pipeline.extract")
 
 
+def _safe_text(value: str | None) -> str:
+    """Replace lone UTF-16 surrogates exposed by imperfect PDF fonts."""
+    if not value:
+        return ""
+    return "".join(
+        ch if not 0xD800 <= ord(ch) <= 0xDFFF else "\ufffd"
+        for ch in value
+    )
+
+
 def _ensure_pages(session: Session, doc: SourceDocument, count: int) -> list[SourcePage]:
     existing = {p.page_number: p for p in session.query(SourcePage)
                 .filter_by(document_id=doc.id).all()}
@@ -59,7 +69,7 @@ def extract_pdf_pages(pdf_path: str | Path, session: Session,
     pages = _ensure_pages(session, doc, len(reader.pages))
     for page, obj in zip(pages, reader.pages):
         try:
-            page.text_content = obj.extract_text() or ""
+            page.text_content = _safe_text(obj.extract_text())
             page.text_confidence = 0.85 if page.text_content.strip() else 0.0
         except Exception:
             page.text_content = ""
@@ -83,7 +93,7 @@ def run_text_extract(session: Session, docs: list[SourceDocument],
             with pdfplumber.open(str(pdf_path)) as pdf:
                 pages = _ensure_pages(session, doc, len(pdf.pages))
                 for page, pobj in zip(pages, pdf.pages):
-                    text = pobj.extract_text() or ""
+                    text = _safe_text(pobj.extract_text())
                     if len(text.strip()) > len(page.text_content.strip()):
                         page.text_content = text
                         page.text_confidence = 0.9

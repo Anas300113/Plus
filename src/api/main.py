@@ -11,8 +11,8 @@ import os
 import uuid
 from datetime import datetime
 
-from fastapi import Depends, FastAPI, Header, HTTPException
-from pydantic import BaseModel
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from pydantic import BaseModel, Field
 from fastapi.responses import HTMLResponse
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
@@ -258,7 +258,8 @@ def review_page():
 
 @app.get("/api/questions")
 def list_questions(subject: str | None = None, topic: str | None = None,
-                   limit: int = 20, db: Session = Depends(get_db)):
+                   limit: int = Query(default=20, ge=1, le=100),
+                   db: Session = Depends(get_db)):
     q = (db.query(CanonicalQuestion)
          .join(QuestionReviewStatus,
                QuestionReviewStatus.question_id == CanonicalQuestion.id)
@@ -715,7 +716,10 @@ def loop_route(student_id: str, x_student_id: str | None = Header(default=None),
 
 
 @app.get("/api/system/statistics")
-def system_statistics_route(limit: int = 50, db: Session = Depends(get_db)):
+def system_statistics_route(
+        limit: int = Query(default=50, ge=1, le=100),
+        db: Session = Depends(get_db),
+        _reviewer: str = Depends(require_reviewer)):
     """Content-health view: validation status counts, hardest questions.
 
     Item-discrimination figures are indicative only and reported as ``None``
@@ -752,13 +756,13 @@ def parent_dashboard(student_id: str, x_student_id: str | None = Header(default=
 
 
 class ExamCreate(BaseModel):
-    exam_board_id: str = "mixed"
-    name: str = "Practice paper"
-    region: str = ""
-
-
+    exam_board_id: str = Field(default="mixed", min_length=1, max_length=80)
+    name: str = Field(default="Practice paper", min_length=1, max_length=200)
+    region: str = Field(default="", max_length=80)
 @app.post("/api/exams")
-def create_exam(payload: ExamCreate, db: Session = Depends(get_db)):
+def create_exam(payload: ExamCreate, db: Session = Depends(get_db),
+                _reviewer: str = Depends(require_reviewer)):
+    """Create an assessment; this is an administrative state mutation."""
     from src.core.database import AssessmentExam
     e = AssessmentExam(id=str(uuid.uuid4()), exam_board_id=payload.exam_board_id,
                        name=payload.name, region=payload.region)
@@ -768,14 +772,14 @@ def create_exam(payload: ExamCreate, db: Session = Depends(get_db)):
 
 
 class AssembleIn(BaseModel):
-    mode: str = "generated"  # generated | authentic
-    sections: list[dict] = []
-    document_id: str = ""
-    seed: int = 42
-
-
+    mode: str = Field(default="generated", pattern="^(generated|authentic)$")
+    sections: list[dict] = Field(default_factory=list, max_length=50)
+    document_id: str = Field(default="", max_length=255)
+    seed: int = Field(default=42, ge=-2**31, le=2**31 - 1)
 @app.post("/api/exams/{exam_id}/assemble")
-def assemble_exam(exam_id: str, payload: AssembleIn, db: Session = Depends(get_db)):
+def assemble_exam(exam_id: str, payload: AssembleIn, db: Session = Depends(get_db),
+                  _reviewer: str = Depends(require_reviewer)):
+    """Assemble an assessment; only reviewer/admin credentials may mutate it."""
     from src.assessment.assembler import assemble_authentic, assemble_generated
     if payload.mode == "authentic":
         return assemble_authentic(db, exam_id, payload.document_id)
@@ -795,10 +799,8 @@ _KNOWLEDGE_INDEX_PATH = os.environ.get(
 
 
 class KnowledgeQuery(BaseModel):
-    q: str
-    k: int = 5
-
-
+    q: str = Field(min_length=1, max_length=1000)
+    k: int = Field(default=5, ge=1, le=20)
 @app.post("/api/knowledge/search")
 def knowledge_search(payload: KnowledgeQuery):
     from pathlib import Path

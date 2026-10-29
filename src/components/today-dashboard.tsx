@@ -28,6 +28,11 @@ type DashboardData = {
   continueHref: string;
   hasActiveSession: boolean;
   minutesByDay: { date: string; label: string; state: "complete" | "today" | "upcoming" | "missed"; minutes: number }[];
+  weekly_plan: {
+    weekday: string; subject: string; topic: string; mode: string;
+    requested_questions: number; available_questions: number; ready: boolean;
+    lesson: { title: string; overview: string; strategy: string; worked_example: string; common_mistakes: string[] };
+  };
 };
 
 const planIcons = [Calculator, MessageSquareText, RefreshCw];
@@ -101,6 +106,22 @@ export function TodayDashboard() {
         </div>
         <Image className="owl-peek" src="/plus11-mark.svg" alt="" aria-hidden="true" width={38} height={38} />
       </motion.section>
+
+      {isLearner ? <section className="weekly-lesson-card" aria-labelledby="weekly-lesson-heading">
+        <div className="section-heading-row">
+          <h2 id="weekly-lesson-heading" className="section-title">{dashboard.weekly_plan.weekday}: {dashboard.weekly_plan.subject}</h2>
+          <span className="section-progress">{dashboard.weekly_plan.topic}</span>
+        </div>
+        <p className="plan-detail">{dashboard.weekly_plan.lesson.overview}</p>
+        <details className="lesson-details">
+          <summary>See the method before you start</summary>
+          <p>{dashboard.weekly_plan.lesson.strategy}</p>
+          <p><strong>Worked example:</strong> {dashboard.weekly_plan.lesson.worked_example}</p>
+        </details>
+        <p className="plan-detail">{dashboard.weekly_plan.ready
+          ? `${dashboard.weekly_plan.requested_questions} question test · ${dashboard.weekly_plan.available_questions} reviewed questions ready`
+          : "The reviewed question set for this lesson is still being prepared."}</p>
+      </section> : null}
 
       <section className="plan-section" aria-labelledby="plan-heading">
         <div className="section-heading-row">

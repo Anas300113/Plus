@@ -56,6 +56,7 @@ export function PracticeSession() {
   const router = useRouter();
   const { status, csrfToken, refresh: refreshSession } = useSession();
   const demoMode = searchParams.get("demo") === "1";
+  const weeklyPlan = searchParams.get("weekly") === "1";
   const requestedSubject = searchParams.get("subject") ?? "verbal-reasoning";
   const requestedTopic = searchParams.get("topic") ?? "odd-one-out";
   const signedIn = status === "authenticated" && !demoMode;
@@ -65,7 +66,7 @@ export function PracticeSession() {
   const topicId = signedIn
     ? requestedTopic.slice(0, 140)
     : isSupportedTopic(subjectId, requestedTopic) ? requestedTopic : defaultTopic(subjectId);
-  const sessionKey = `${subjectId}:${topicId}`;
+  const sessionKey = `${weeklyPlan ? "weekly" : subjectId}:${topicId}`;
   const requestedSessionId = signedIn ? searchParams.get("sessionId") : null;
   const questionSet = getQuestionsForTopic(subjectId, topicId);
   const [questionIndex, setQuestionIndex] = useState(0);
@@ -115,11 +116,15 @@ export function PracticeSession() {
     if (!sessionRequestRef.current || sessionRequestRef.current.key !== requestKey) {
       const promise = requestedSessionId
         ? apiGet<SessionResult>(`/api/learner/practice/sessions/${encodeURIComponent(requestedSessionId)}`)
-        : apiWrite<SessionResult>("/api/learner/practice/sessions", csrfToken, "POST", {
-            subjectId,
-            topicId,
-            idempotencyKey: crypto.randomUUID(),
-          });
+        : weeklyPlan
+          ? apiWrite<SessionResult>("/api/learner/weekly-plan/start", csrfToken, "POST", {
+              idempotency_key: crypto.randomUUID(),
+            })
+          : apiWrite<SessionResult>("/api/learner/practice/sessions", csrfToken, "POST", {
+              subjectId,
+              topicId,
+              idempotencyKey: crypto.randomUUID(),
+            });
       sessionRequestRef.current = { key: requestKey, promise };
     }
 
@@ -177,7 +182,7 @@ export function PracticeSession() {
       }
     });
     return () => { active = false; };
-  }, [status, csrfToken, requestKey, sessionKey, retryCount, refreshSession, subjectId, topicId, requestedSessionId, demoMode, router, searchParams]);
+  }, [status, csrfToken, requestKey, sessionKey, retryCount, refreshSession, subjectId, topicId, requestedSessionId, demoMode, weeklyPlan, router, searchParams]);
 
   useEffect(() => {
     if (status === "loading" || (signedIn && !sessionReady)) return;

@@ -180,6 +180,18 @@ def approval_blockers(session: Session, question_id: str) -> list[str]:
     if not has_provenance(session, question_id):
         blockers.append(
             "no occurrence with verifiable page- or file-level provenance")
+    # Extractability does not imply publication rights. The 11-dump importer
+    # marks third-party material as reference_only until an authorised person
+    # records permission or another acceptable rights status.
+    occs = _occurrences(session, question_id)
+    doc_ids = {o.document_id for o in occs if o.document_id}
+    reference_docs = (session.query(SourceDocument)
+                      .filter(SourceDocument.id.in_(doc_ids),
+                              SourceDocument.rights_status == "reference_only")
+                      .count() if doc_ids else 0)
+    if reference_docs:
+        blockers.append(
+            "source rights_status is reference_only; verify permission before approval")
     if _looks_mcq(q):
         labels = option_labels(q)
         option_items = q.options_json or []
@@ -235,6 +247,9 @@ def set_status(session: Session, question_id: str, status: str,
         return
     from_status = row.status
     row.status = status
+    question = session.query(CanonicalQuestion).filter_by(id=question_id).first()
+    if question is not None:
+        question.validation_status = status
     row.reviewer = reviewer
     row.decision = status
     row.reason = reason
@@ -317,6 +332,7 @@ def _downgrade_review_if_approved(session: Session, q: CanonicalQuestion,
         question_id=q.id).first()
     if row is not None and row.status == APPROVED:
         row.status = VALIDATED_REQUIRES_REVIEW
+        q.validation_status = VALIDATED_REQUIRES_REVIEW
         row.reviewer = reviewer
         row.decision = VALIDATED_REQUIRES_REVIEW
         row.reason = "reviewer edit invalidated the verified answer"

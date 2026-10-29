@@ -282,6 +282,65 @@ def get_catalog(
     return {"subjects": _catalog(db, identity.student_id)}
 
 
+@router.get("/weekly-plan")
+def get_weekly_plan(
+    identity: LearnerIdentity = Depends(get_current_learner),
+    db: Session = Depends(get_db),
+):
+    """Return today's mini-lesson and test plan from the curriculum cadence."""
+    from src.learning.weekly_plan import weekly_plan
+    return weekly_plan(db, identity.student_id, utcnow().date())
+
+
+class WeeklyPlanStartIn(BaseModel):
+    idempotency_key: str = Field(min_length=36, max_length=36)
+
+
+@router.post("/weekly-plan/start")
+def start_weekly_plan(
+    payload: WeeklyPlanStartIn,
+    identity: LearnerIdentity = Depends(get_current_learner),
+    db: Session = Depends(get_db),
+):
+    """Start today's scheduled test using only approved questions."""
+    from src.learning.session import start_session
+    from src.learning.weekly_plan import question_ids_for_plan, weekly_plan
+    try:
+        request_uuid = uuid.UUID(payload.idempotency_key)
+    except ValueError:
+        raise HTTPException(400, "This learning plan request is invalid.") from None
+    plan = weekly_plan(db, identity.student_id, utcnow().date())
+    question_ids = question_ids_for_plan(db, plan)
+    if not question_ids:
+        raise HTTPException(409, "There are no reviewed questions ready for today's plan yet.")
+    session_type = "mock" if plan["mode"] == "combined" else "practice"
+    goals = {
+        "plus11_weekly_plan": True,
+        "plus11_plan_date": plan["date"],
+        "plus11_subject_id": plan["subject_id"],
+        "plus11_topic_id": plan["topic_id"],
+        "plus11_mode": plan["mode"],
+        "plus11_requested_questions": plan["requested_questions"],
+    }
+    session_id = str(uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"plus11:weekly-plan:{identity.student_id}:{plan['date']}:{request_uuid}"))
+    existing = db.query(LearningStudySession).filter_by(id=session_id).first()
+    if existing:
+        if existing.student_id != identity.student_id or (existing.goals_json or {}) != goals:
+            raise HTTPException(409, "This learning plan request has already been used.")
+        return _session_view(db, existing.id)
+    try:
+        session = start_session(
+            db, identity.student_id, session_type=session_type,
+            question_ids=question_ids, ordering="shuffled", seed=plan["date"].__hash__(),
+            planned_duration_seconds=20 * 60 if len(question_ids) <= 20 else 45 * 60,
+            goals=goals, session_id=session_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return {"plan": plan, "session": _session_view(db, session.id)}
+
+
 @router.get("/dashboard")
 def get_dashboard(
     identity: LearnerIdentity = Depends(get_current_learner),
@@ -289,6 +348,7 @@ def get_dashboard(
 ):
     from src.learning.review import due_review_items
     from src.learning.statistics import student_statistics
+    from src.learning.weekly_plan import weekly_plan
 
     display_name = _display_name(db, identity)
     attempts = _attempt_rows(db, identity.student_id)
@@ -304,6 +364,7 @@ def get_dashboard(
     active = next((row for row in active_sessions
                    if row.current_index < len(row.question_order)), None)
     today = utcnow().date()
+    daily_plan = weekly_plan(db, identity.student_id, today)
     completed_today = [row for row in db.query(LearningStudySession)
         .filter_by(student_id=identity.student_id, state="complete").all()
         if row.started_at and row.started_at.date() == today]
@@ -343,10 +404,11 @@ def get_dashboard(
         continue_href = "/learn"
     else:
         first_item = {
-            "id": "choose-topic",
-            "title": "Choose a topic to begin",
-            "detail": "Start with a question from the reviewed bank.",
-            "href": "/learn",
+            "id": "weekly-plan",
+            "title": f"{daily_plan['subject']}: {daily_plan['topic']}",
+            "detail": (f"Mini lesson then {daily_plan['requested_questions']} question test"
+                       if daily_plan["ready"] else "Mini lesson and test coming soon"),
+            "href": "/practice?weekly=1" if daily_plan["ready"] else "/learn",
             "done": False,
             "in_progress": False,
         }
@@ -381,6 +443,7 @@ def get_dashboard(
         "daily_minutes": today_minutes,
         "daily_target_minutes": 30,
         "plan": plan,
+        "weekly_plan": daily_plan,
         "completed_count": sum(1 for item in plan if item["done"]),
         "due_count": due_count,
         "continue_href": continue_href,
