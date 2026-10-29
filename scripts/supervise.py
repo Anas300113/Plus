@@ -101,10 +101,18 @@ def main() -> int:
     env["PLUS_API_PORT"] = str(api_port)
     env["PORT"] = str(public_port)
     env["HOSTNAME"] = "0.0.0.0"
+    if production:
+        env["PLUS_ENV"] = "production"
     env.setdefault("PLUS_REAL_STUDENT_DATA", "1")
     env.setdefault("PLUS_REQUIRE_STUDENT_IDENTITY", "1")
 
     python = python_with_fastapi()
+    if production:
+        from src.core.config import validate_production_environment
+        try:
+            validate_production_environment(env)
+        except ValueError as exc:
+            raise SystemExit(f"Production configuration is invalid: {exc}") from None
     database_url = env.get("DATABASE_URL") or env.get("PLUS_DATABASE_URL", "")
     run_migrations = (
         production and env.get("PLUS_RUN_MIGRATIONS", "0") == "1"

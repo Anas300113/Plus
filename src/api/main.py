@@ -211,6 +211,7 @@ def readiness():
         required = {
             "learning_students", "learning_study_sessions",
             "canonical_questions", "question_review_status",
+            "canonical_topics", "curriculum_lessons", "schema_migrations",
         }
         if not required.issubset(set(inspect(_engine).get_table_names())):
             raise HTTPException(503, "database schema is not ready")

@@ -637,13 +637,24 @@ def get_engine(url: str):
         root_cert = os.environ.get("SUPABASE_DB_SSLROOTCERT")
         if root_cert:
             query["sslrootcert"] = root_cert
+        try:
+            pool_size = max(1, int(os.environ.get("PLUS_DB_POOL_SIZE", "5")))
+            max_overflow = max(0, int(os.environ.get("PLUS_DB_MAX_OVERFLOW", "5")))
+            statement_timeout = max(1000, int(os.environ.get("PLUS_DB_STATEMENT_TIMEOUT_MS", "15000")))
+        except ValueError as exc:
+            raise ValueError(
+                "PLUS_DB_POOL_SIZE, PLUS_DB_MAX_OVERFLOW, and PLUS_DB_STATEMENT_TIMEOUT_MS must be integers."
+            ) from exc
         parsed = parsed.set(drivername="postgresql+psycopg", query=query)
         # Disabling prepared statements keeps this engine compatible with
         # Supavisor's transaction pooler as well as direct/session connections.
         return create_engine(
             parsed, echo=False, future=True, pool_pre_ping=True,
-            pool_size=5, max_overflow=5, pool_recycle=1800,
-            connect_args={"prepare_threshold": None},
+            pool_size=pool_size, max_overflow=max_overflow, pool_recycle=1800,
+            connect_args={
+                "prepare_threshold": None,
+                "options": f"-c statement_timeout={statement_timeout} -c idle_in_transaction_session_timeout=60000",
+            },
         )
     if parsed.drivername in ("mysql", "mysql+pymysql", "mariadb"):
         query = dict(parsed.query)

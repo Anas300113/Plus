@@ -21,6 +21,8 @@
 | `PLUS_API_BASE_URL` | Frontend | Backend URL |
 | `PLUS_API_PORT` | Backend | Backend port |
 | `PLUS_RUN_MIGRATIONS` | Backend | Set to `1` for first deploy, `0` after |
+| `PLUS_REAL_STUDENT_DATA` | Backend | Must be `1` for production learner data |
+| `PLUS_REQUIRE_STUDENT_IDENTITY` | Backend | Must be `1` for production learner data |
 
 ### Optional
 | Variable | Description |
@@ -28,6 +30,8 @@
 | `SUPABASE_DB_SSLROOTCERT` | SSL cert path for DB connections |
 | `PLUS_REVIEWER_TOKEN` | Token for question review operations |
 | `PORT` | Frontend port (default: 3000) |
+| `PLUS_DB_POOL_SIZE` / `PLUS_DB_MAX_OVERFLOW` | PostgreSQL pool bounds (defaults 5 / 5) |
+| `PLUS_DB_STATEMENT_TIMEOUT_MS` | PostgreSQL statement timeout (default 15000) |
 
 ## Build & Start Commands
 
@@ -78,6 +82,81 @@ The migration command is idempotent and records applied actions in
 - Backend readiness: `GET /api/ready` → 200 only after the database connection and
   required learner tables are available
 - Database: Check Supabase dashboard and confirm the migration step completed
+
+For a deployed stack, run the unauthenticated checks from the repository root:
+
+```bash
+python scripts/smoke_test.py \
+  --web https://plus.example.com \
+  --api https://api.example.com
+```
+
+The smoke test intentionally does not test learner data. Complete the
+authenticated browser checklist below using a staging account before allowing
+production traffic.
+
+## Go-live sequence
+
+### Stage 1 — Prepare Supabase
+
+1. Create a dedicated staging Supabase project and a separate production
+   project. Do not use production credentials in local development.
+2. Configure Supabase Auth email/password settings and add the exact frontend
+   callback URL under Authentication → URL Configuration.
+3. Copy the **direct/session** PostgreSQL connection string from Supabase.
+   URL-encode the database password. Keep the transaction pooler out of the
+   migration job.
+4. Store secrets in the hosting provider's secret manager. Never put
+   `DATABASE_URL`, reviewer tokens, or private keys in GitHub Actions logs.
+
+### Stage 2 — Deploy staging
+
+1. Build the exact commit intended for release.
+2. Set `PLUS_RUN_MIGRATIONS=1` for the one-time migration job, with
+   `PLUS_DB_SSLMODE=require` unless the Supabase CA bundle is mounted.
+3. Run `python -m src.core.migrate` and save its output as the release record.
+4. Set `PLUS_RUN_MIGRATIONS=0` for the long-running application process.
+5. Deploy the backend and frontend, then run `scripts/smoke_test.py`.
+6. Create a staging learner account and verify signup, login, logout, profile
+   update, dashboard, mini-lesson, practice answers, retries, completion,
+   reviews, progress, and the Friday combined test.
+7. Verify authorization: an expired/altered JWT is rejected, a learner cannot
+   access another learner's session, CSRF-protected mutations reject missing or
+   invalid tokens, and pending/reference-only questions never appear.
+8. Confirm Supabase database backups, auth email delivery, logs, and resource
+   usage before promoting the release.
+
+### Stage 3 — Production cutover
+
+1. Take or verify a current Supabase backup and record the backup timestamp.
+2. Put the release in maintenance or keep the current version serving traffic.
+3. Run the migration job against the production **direct/session** connection.
+4. Check `/api/ready`; do not route traffic if it is not `200`.
+5. Deploy the backend and frontend using the same tested commit and set
+   `PLUS_RUN_MIGRATIONS=0` on the application process.
+6. Run the smoke test and one authenticated canary account check.
+7. Monitor error rate, latency, database connections, Supabase Auth errors,
+   and failed learner mutations for at least 30 minutes.
+8. Announce availability only after the canary and monitoring window pass.
+
+### Stage 4 — Rollback
+
+1. If application code fails but the schema is compatible, redeploy the prior
+   application image/commit without reverting the database.
+2. If a migration caused data or schema damage, stop writes, preserve logs,
+   restore to a new Supabase staging project first, and validate the restore.
+3. Only restore production after the staging restore passes the smoke test and
+   learner authorization checks. Never run destructive rollback SQL casually.
+4. Rotate any credential that appeared in logs or was exposed during a failed
+   deployment.
+
+### Release acceptance criteria
+
+The release is considered production-ready only when all of the following are
+true: CI is green; staging migration and browser checks pass; production
+`/api/ready` is green; the smoke test passes; backups are verified; the
+production frontend and backend use the same commit; no secrets are present in
+the repository; and the rollback owner and contact path are recorded.
 
 ## Rollback Strategy
 
